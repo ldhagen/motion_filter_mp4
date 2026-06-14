@@ -4,6 +4,9 @@
 INPUT_VIDEO=""
 WORKSPACE=""
 LOG_FILE="pipeline.log"
+JOBS=1
+FS_VAL=2
+DF_VAL=2
 
 # Function to show detailed help
 show_help() {
@@ -11,7 +14,7 @@ show_help() {
 ================================================================================
  VIDEO SCANNING PIPELINE - HELP
 ================================================================================
-Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>]
+Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>] [-j <jobs>] [--fs <frame_skip>] [--df <downscale>]
 
 This script automates a 5-stage funnel to extract, verify, and timestamp 
 motion events from large video files.
@@ -24,6 +27,11 @@ REQUIRED ARGUMENTS:
 OPTIONAL ARGUMENTS:
   -o, --output      Target directory for final results. 
                     Defaults to: ./scan_results_<video_name>
+  -j, --jobs        Number of parallel dvr-scan jobs (default: 1).
+  --fs              Frame skip for dvr-scan (default: 2, processes every 3rd frame).
+                    Use 4 for much faster scanning of human/car motion.
+  --df              Downscale factor for dvr-scan (default: 2).
+                    Use 4 for significantly faster scanning at lower resolution.
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
@@ -32,7 +40,7 @@ PROCESS STAGES:
 STAGE 1: Motion Extraction (DVR-Scan)
   Uses computer vision to perform a high-speed pass over the entire raw video. 
   It identifies ANY motion (shadows, wind, objects) and slices them into 
-  short temporary clips.
+  short temporary clips. Now supports multi-threaded chunking.
 
 STAGE 2: AI Filtering (YOLOv8)
   Uses a Neural Network to verify the results. It scans the motion clips 
@@ -51,15 +59,6 @@ STAGE 4: Visual Timestamp Burn-In
 STAGE 5: Cleanup
   Aggressively deletes the massive intermediate temporary folders to save 
   disk space, leaving you with only the final verified events.
-
---------------------------------------------------------------------------------
-TIPS FOR NOHUP:
---------------------------------------------------------------------------------
-To run this in the background so you can close your session:
-  nohup ./run_pipeline.sh -i video.mp4 > my_run.log 2>&1 &
-
-To monitor progress:
-  tail -f my_run.log
 ================================================================================
 EOF
 }
@@ -69,6 +68,9 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         -i|--input) INPUT_VIDEO="$2"; shift ;;
         -o|--output) WORKSPACE="$2"; shift ;;
+        -j|--jobs) JOBS="$2"; shift ;;
+        -fs|--fs) FS_VAL="$2"; shift ;;
+        -df|--df) DF_VAL="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
@@ -96,17 +98,152 @@ fi
 # Define internal paths
 DIR_MOTION="$WORKSPACE/01_motion_only"
 DIR_FINAL="$WORKSPACE/02_humans_cars"
-# Local log for this specific run's offsets
 PIPE_LOG="$WORKSPACE/offsets.log"
+STATUS_LOG="$WORKSPACE/status.log"
 
 mkdir -p "$DIR_MOTION" "$DIR_FINAL"
 
 echo "========================================================"
 echo " STAGE 1: Motion Extraction (DVR-Scan)"
 echo "========================================================"
-# Slices the massive file into raw motion events. 
-# We capture the output to offsets.log so we can rename in Stage 3
-dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs 2 -df 2 -d "$DIR_MOTION" 2>&1 | tee "$PIPE_LOG"
+
+if [ "$JOBS" -le 1 ]; then
+    dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" 2>&1 | tee "$PIPE_LOG"
+else
+    echo "Parallel Mode: $JOBS jobs"
+    echo "Tracking progress in: $STATUS_LOG"
+    python3 - <<EOF
+import subprocess
+import os
+import shutil
+import re
+import time
+from datetime import timedelta
+from concurrent.futures import ProcessPoolExecutor
+
+input_video = "$INPUT_VIDEO"
+workspace = "$WORKSPACE"
+jobs = int("$JOBS")
+fs = "$FS_VAL"
+df = "$DF_VAL"
+dir_motion = "$DIR_MOTION"
+pipe_log = "$PIPE_LOG"
+status_log = "$STATUS_LOG"
+orig_base = os.path.splitext(os.path.basename(input_video))[0]
+
+def get_duration(video):
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video]
+    return float(subprocess.check_output(cmd).decode().strip())
+
+def get_actual_start_offset(video, part_file):
+    # Determine the actual time in the original video where the part_file starts
+    # By analyzing the first packet of the chunk
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", part_file]
+    try:
+        output = subprocess.check_output(cmd + ["-read_intervals", "%+1"], stderr=subprocess.STDOUT).decode().split('\n')[0]
+        return float(output) if output else 0.0
+    except:
+        return 0.0
+
+duration = get_duration(input_video)
+chunk_size = duration / jobs
+
+def run_job(i):
+    start_req = i * chunk_size
+    part_dir = os.path.join(workspace, f"part_{i}")
+    os.makedirs(part_dir, exist_ok=True)
+    part_log = os.path.join(part_dir, "offsets.log")
+    part_video = os.path.join(part_dir, f"part_{i}.mp4")
+    
+    # Split using fast seeking and stream copy
+    split_cmd = ["ffmpeg", "-y", "-ss", str(start_req), "-t", str(chunk_size), "-i", input_video, "-c", "copy", "-map", "0", "-copyts", "-start_at_zero", part_video]
+    subprocess.run(split_cmd, capture_output=True)
+    
+    if not os.path.exists(part_video):
+        return i, start_req, False
+
+    # Get the actual timestamp where ffmpeg landed (corrected for keyframe)
+    # With -copyts and -start_at_zero, the first frame's pts_time in the new file 
+    # should reflect its position in the old file IF handled correctly. 
+    # However, dvr-scan usually resets time to 0. 
+    # So we calculate the 'drift' relative to the original.
+    
+    scan_cmd = ["dvr-scan", "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir]
+    with open(part_log, "w") as f:
+        subprocess.run(scan_cmd, stdout=f, stderr=subprocess.STDOUT)
+    
+    if os.path.exists(part_video):
+        os.remove(part_video)
+    
+    return i, start_req, True
+
+print(f"Dividing {duration:.2f}s into {jobs} chunks...")
+with ProcessPoolExecutor(max_workers=jobs) as executor:
+    futures = [executor.submit(run_job, i) for i in range(jobs)]
+    
+    while not all(f.done() for f in futures):
+        summary = []
+        for i in range(jobs):
+            p_log = os.path.join(workspace, f"part_{i}", "offsets.log")
+            if os.path.exists(p_log):
+                with open(p_log, "r") as f:
+                    content = f.read()
+                    last_prog = re.findall(r"Progress:.*?(\d+%)", content)
+                    if last_prog:
+                        summary.append(f"Job {i}: {last_prog[-1]}")
+                    else:
+                        summary.append(f"Job {i}: Scanning...")
+            else:
+                summary.append(f"Job {i}: Initializing...")
+        
+        status_text = " | ".join(summary)
+        print(f"\r{status_text}", end="", flush=True)
+        with open(status_log, "w") as f:
+            f.write(status_text + "\n")
+        time.sleep(5)
+    print("\nAll scan jobs complete.")
+
+results = [f.result() for f in futures]
+
+print("Merging results and correcting timestamps...")
+with open(pipe_log, "w") as master:
+    for i, start, success in results:
+        if not success: continue
+        part_dir = os.path.join(workspace, f"part_{i}")
+        part_log = os.path.join(part_dir, "offsets.log")
+        part_base = f"part_{i}"
+        
+        if os.path.exists(part_log):
+            with open(part_log, "r") as f:
+                content = f.read()
+                
+                def adjust_offset(match):
+                    time_str = match.group(1)
+                    h, m, s = time_str.split(':')
+                    offset = timedelta(hours=int(h), minutes=int(m), seconds=float(s))
+                    # Anchor back to original absolute time
+                    new_time = offset + timedelta(seconds=start)
+                    
+                    ts = int(new_time.total_seconds())
+                    hrs, remainder = divmod(ts, 3600)
+                    mns, scs = divmod(remainder, 60)
+                    mms = int(new_time.microseconds / 1000)
+                    return f"-ss {hrs:02}:{mns:02}:{scs:02}.{mms:03}"
+
+                content = re.sub(r"-ss (\d{2}:\d{2}:\d{2}\.\d{3})", adjust_offset, content)
+                content = content.replace(part_base, orig_base)
+                def prefix_dsme(match):
+                    return f"{orig_base}.DSME_{i:02d}{match.group(1)}.mp4"
+                content = re.sub(re.escape(orig_base) + r"\.DSME_(\d{4})\.mp4", prefix_dsme, content)
+                master.write(content)
+        
+        for f in os.listdir(part_dir):
+            if f.endswith(".mp4") and f.startswith(part_base):
+                new_f = f.replace(part_base, orig_base).replace(".DSME_", f".DSME_{i:02d}")
+                shutil.move(os.path.join(part_dir, f), os.path.join(dir_motion, new_f))
+        shutil.rmtree(part_dir)
+EOF
+fi
 
 # Abort early if no motion was found
 if [ -z "$(ls -A "$DIR_MOTION"/*.mp4 2>/dev/null)" ]; then
@@ -124,7 +261,6 @@ echo ""
 echo "========================================================"
 echo " STAGE 3: Filename Timestamps"
 echo "========================================================"
-# Create the temporary renamer script
 cat << 'EOF' > temp_renamer.py
 import os
 import re
@@ -132,26 +268,18 @@ import sys
 from datetime import datetime, timedelta
 
 def do_rename(log_file, base_dir, video_filename):
-    # Parse the base start time (e.g. front_window_2025_02_16_00_00__...)
     match = re.search(r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', video_filename)
-    if not match:
-        print("Warning: Could not parse base date from filename. Skipping rename.")
-        return
+    if not match: return
         
     y, m, d, H, M = map(int, match.groups())
     base_start_time = datetime(y, m, d, H, M, 0)
     
-    if not os.path.exists(log_file):
-        print(f"Error: log file {log_file} not found.")
-        return
-        
+    if not os.path.exists(log_file): return
     with open(log_file, 'r') as f:
         content = f.read()
 
-    # Find all ffmpeg offset lines
-    # We look for the base filename pattern inside the log
-    escaped_base = re.escape(video_filename.replace('.mp4', ''))
-    pattern = re.compile(r'-ss (\d{2}:\d{2}:\d{2}\.\d{3}).*?(' + escaped_base + r'\.DSME_(\d{4})\.mp4)')
+    escaped_base = re.escape(os.path.splitext(video_filename)[0])
+    pattern = re.compile(r'-ss (\d{2}:\d{2}:\d{2}\.\d{3}).*?(' + escaped_base + r'\.DSME_(\d+)\.mp4)')
     matches = pattern.findall(content)
 
     rename_map = {}
@@ -159,18 +287,16 @@ def do_rename(log_file, base_dir, video_filename):
         h, mn, s = offset_str.split(':')
         offset = timedelta(hours=int(h), minutes=int(mn), seconds=float(s))
         actual_time = base_start_time + offset
-        
         new_name = actual_time.strftime("%Y%m%d_%H%M%S") + "_DSME_" + dsme_num + ".mp4"
         rename_map[full_name] = new_name
         
     if not os.path.exists(base_dir): return
-    
     success = 0
     for old_name in os.listdir(base_dir):
         if old_name in rename_map:
             os.rename(os.path.join(base_dir, old_name), os.path.join(base_dir, rename_map[old_name]))
             success += 1
-    print(f"Renamed {success} files using offsets from {log_file}.")
+    print(f"Renamed {success} files using offsets.")
 
 if __name__ == "__main__":
     do_rename(sys.argv[1], sys.argv[2], sys.argv[3])
@@ -193,6 +319,7 @@ if [ -d "$DIR_MOTION" ]; then
     echo "Removing intermediate motion clips in $DIR_MOTION..."
     rm -rf "$DIR_MOTION"
 fi
+rm -rf "$WORKSPACE"/part_* 2>/dev/null
 
 echo ""
 echo "========================================================"

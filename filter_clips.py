@@ -32,6 +32,9 @@ def main():
     
     print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
 
+    kept_count = 0
+    skipped_count = 0
+
     for filename in sorted(os.listdir(args.input)):
         if not filename.endswith('.mp4'):
             continue
@@ -93,8 +96,19 @@ def main():
         if motion_frames_count >= args.min_motion_frames:
             print(f"  [KEEP] Motion detected in {motion_frames_count} frames: {filename}")
             shutil.copy(filepath, os.path.join(args.output, filename))
+            kept_count += 1
         else:
             print(f"  [SKIP] {filename} (stationary or no real motion)")
+            skipped_count += 1
+            
+    print("\nAI Verification Results:")
+    print("------------------------")
+    print(f"Total Clips Scanned: {kept_count + skipped_count}")
+    print(f"Humans/Cars Found:   {kept_count} (Keep)")
+    print(f"Stationary/Wind:     {skipped_count} (Discarded)")
+    if (kept_count + skipped_count) > 0:
+        reduction = (skipped_count / (kept_count + skipped_count)) * 100
+        print(f"Efficiency:          {reduction:.1f}% reduction in footage.")
 
 if __name__ == "__main__":
     main()
