@@ -23,17 +23,22 @@ def main():
     parser.add_argument('--iou-threshold', type=float, default=0.4, help="IOU threshold to consider an object stationary")
     parser.add_argument('--min-motion-frames', type=int, default=5, help="Minimum number of sampled frames with motion to keep clip")
     parser.add_argument('--frame-step', type=int, default=30, help="Check every Nth frame for motion")
-    parser.add_argument('--classes', type=int, nargs='+', default=[0, 2], help="YOLOv8 class IDs to detect (e.g., 0 for person, 2 for car)")
+    parser.add_argument('--classes', nargs='+', default=['0', '2'], help="YOLOv8 class IDs to detect, or 'all' to detect everything")
     args = parser.parse_args()
 
     model = YOLO('yolov8n.pt') 
     os.makedirs(args.output, exist_ok=True)
     
     FRAME_STEP = args.frame_step   
-    DETECT_CLASSES = args.classes
+    
+    # Handle 'all' keyword
+    if 'all' in [c.lower() for c in args.classes]:
+        DETECT_CLASSES = None
+    else:
+        DETECT_CLASSES = [int(c) for c in args.classes]
     
     print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
-    print(f"Targeting classes: {DETECT_CLASSES}")
+    print(f"Targeting classes: {'all' if DETECT_CLASSES is None else DETECT_CLASSES}")
 
     kept_count = 0
     skipped_count = 0

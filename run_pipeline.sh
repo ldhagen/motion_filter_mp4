@@ -34,7 +34,8 @@ OPTIONAL ARGUMENTS:
   --df              Downscale factor for dvr-scan (default: 2).
                     Use 4 for significantly faster scanning at lower resolution.
   --classes         YOLOv8 class IDs to detect (default: "0 2" for person/car).
-                    Example: --classes "0 2 16" (person, car, dog)
+                    Use "all" to detect every object type known to YOLO.
+                    Example: --classes "all" or --classes "0 2 16"
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
