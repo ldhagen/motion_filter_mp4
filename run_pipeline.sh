@@ -184,7 +184,10 @@ def run_job(i):
 
 print(f"Dividing {duration:.2f}s into {jobs} chunks...")
 with ProcessPoolExecutor(max_workers=jobs) as executor:
-    futures = [executor.submit(run_job, i) for i in range(jobs)]
+    futures = []
+    for i in range(jobs):
+        futures.append(executor.submit(run_job, i))
+        time.sleep(2)  # Staggered start to prevent dvr-scan log contention
     
     while not all(f.done() for f in futures):
         summary = []

@@ -4,7 +4,7 @@ This project provides a high-performance, multi-stage pipeline to process large 
 
 ## Refined Features
 
-- **Parallel Processing:** Uses multi-threaded chunking in Stage 1 to process 100+ hour videos up to 4x faster.
+- **Parallel Processing:** Uses multi-threaded chunking in Stage 1 to process 100+ hour videos up to 4x faster. Includes a staggered job start to prevent log file contention and ensure high reliability.
 - **Precision Drift Fix:** Automatically corrects for keyframe alignment errors during chunking, ensuring filenames and burned timestamps are 100% accurate to the original footage.
 - **Flexible Object Detection:** Support for specific YOLO classes or a "detect all" mode.
 - **Live Dashboard:** Provides real-time progress monitoring for parallel jobs.
