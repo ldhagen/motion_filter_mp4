@@ -23,14 +23,17 @@ def main():
     parser.add_argument('--iou-threshold', type=float, default=0.4, help="IOU threshold to consider an object stationary")
     parser.add_argument('--min-motion-frames', type=int, default=5, help="Minimum number of sampled frames with motion to keep clip")
     parser.add_argument('--frame-step', type=int, default=30, help="Check every Nth frame for motion")
+    parser.add_argument('--classes', type=int, nargs='+', default=[0, 2], help="YOLOv8 class IDs to detect (e.g., 0 for person, 2 for car)")
     args = parser.parse_args()
 
     model = YOLO('yolov8n.pt') 
     os.makedirs(args.output, exist_ok=True)
     
     FRAME_STEP = args.frame_step   
+    DETECT_CLASSES = args.classes
     
     print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
+    print(f"Targeting classes: {DETECT_CLASSES}")
 
     kept_count = 0
     skipped_count = 0
@@ -59,7 +62,7 @@ def main():
                 
             if frame_count % FRAME_STEP == 0:
                 # Use a slightly higher confidence (0.4) to filter out weak/ghost detections
-                results = model.predict(source=frame, classes=[0, 2], conf=0.4, verbose=False)
+                results = model.predict(source=frame, classes=DETECT_CLASSES, conf=0.4, verbose=False)
                 current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
                 
                 if reference_boxes is None:
@@ -104,7 +107,7 @@ def main():
     print("\nAI Verification Results:")
     print("------------------------")
     print(f"Total Clips Scanned: {kept_count + skipped_count}")
-    print(f"Humans/Cars Found:   {kept_count} (Keep)")
+    print(f"Targets Found:       {kept_count} (Keep)")
     print(f"Stationary/Wind:     {skipped_count} (Discarded)")
     if (kept_count + skipped_count) > 0:
         reduction = (skipped_count / (kept_count + skipped_count)) * 100

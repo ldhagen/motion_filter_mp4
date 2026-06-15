@@ -7,6 +7,7 @@ LOG_FILE="pipeline.log"
 JOBS=1
 FS_VAL=2
 DF_VAL=2
+CLASSES="0 2"
 
 # Function to show detailed help
 show_help() {
@@ -14,7 +15,7 @@ show_help() {
 ================================================================================
  VIDEO SCANNING PIPELINE - HELP
 ================================================================================
-Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>] [-j <jobs>] [--fs <frame_skip>] [--df <downscale>]
+Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>] [-j <jobs>] [--fs <frame_skip>] [--df <downscale>] [--classes "0 2"]
 
 This script automates a 5-stage funnel to extract, verify, and timestamp 
 motion events from large video files.
@@ -32,6 +33,8 @@ OPTIONAL ARGUMENTS:
                     Use 4 for much faster scanning of human/car motion.
   --df              Downscale factor for dvr-scan (default: 2).
                     Use 4 for significantly faster scanning at lower resolution.
+  --classes         YOLOv8 class IDs to detect (default: "0 2" for person/car).
+                    Example: --classes "0 2 16" (person, car, dog)
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
@@ -71,6 +74,7 @@ while [[ "$#" -gt 0 ]]; do
         -j|--jobs) JOBS="$2"; shift ;;
         -fs|--fs) FS_VAL="$2"; shift ;;
         -df|--df) DF_VAL="$2"; shift ;;
+        --classes) CLASSES="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
@@ -255,7 +259,7 @@ echo ""
 echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
 echo "========================================================"
-python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30
+python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES
 
 echo ""
 echo "========================================================"
