@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--min-motion-frames', type=int, default=5, help="Minimum number of sampled frames with motion to keep clip")
     parser.add_argument('--frame-step', type=int, default=30, help="Check every Nth frame for motion")
     parser.add_argument('--classes', nargs='+', default=['0', '2'], help="YOLOv8 class IDs to detect, or 'all' to detect everything")
+    parser.add_argument('--conf', type=float, default=0.4, help="Confidence threshold for detection")
+    parser.add_argument('--metadata', help="Path to save metadata (mapping filename to classes)")
     args = parser.parse_args()
 
     model = YOLO('yolov8n.pt') 
@@ -39,9 +41,11 @@ def main():
     
     print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
     print(f"Targeting classes: {'all' if DETECT_CLASSES is None else DETECT_CLASSES}")
+    print(f"Confidence threshold: {args.conf}")
 
     kept_count = 0
     skipped_count = 0
+    metadata_map = {}
 
     for filename in sorted(os.listdir(args.input)):
         if not filename.endswith('.mp4'):
@@ -60,16 +64,20 @@ def main():
         reference_boxes = None
         motion_frames_count = 0
         frame_count = 0
+        detected_classes = set()
         
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret: break
                 
             if frame_count % FRAME_STEP == 0:
-                # Use a slightly higher confidence (0.4) to filter out weak/ghost detections
-                results = model.predict(source=frame, classes=DETECT_CLASSES, conf=0.4, verbose=False)
+                results = model.predict(source=frame, classes=DETECT_CLASSES, conf=args.conf, verbose=False)
                 current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
                 
+                if len(current_boxes) > 0:
+                    for c in results[0].boxes.cls:
+                        detected_classes.add(model.names[int(c)])
+
                 if reference_boxes is None:
                     if len(current_boxes) > 0:
                         # Establish background in the first frame we see something
@@ -102,14 +110,22 @@ def main():
         cap.release()
         
         if motion_frames_count >= args.min_motion_frames:
-            print(f"  [KEEP] Motion detected in {motion_frames_count} frames: {filename}")
+            classes_str = ",".join(sorted(list(detected_classes)))
+            print(f"  [KEEP] Motion detected in {motion_frames_count} frames: {filename} (Classes: {classes_str})")
             shutil.copy(filepath, os.path.join(args.output, filename))
+            metadata_map[filename] = sorted(list(detected_classes))
             kept_count += 1
         else:
             print(f"  [SKIP] {filename} (stationary or no real motion)")
             skipped_count += 1
             
+    if args.metadata:
+        import json
+        with open(args.metadata, 'w') as f:
+            json.dump(metadata_map, f)
+
     print("\nAI Verification Results:")
+
     print("------------------------")
     print(f"Total Clips Scanned: {kept_count + skipped_count}")
     print(f"Targets Found:       {kept_count} (Keep)")

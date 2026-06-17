@@ -14,16 +14,21 @@ def burn_timestamps(directory):
 
     success_count = 0
     for idx, filename in enumerate(sorted(files)):
-        # Expected format: YYYYMMDD_HHMMSS_DSME_xxxx.mp4
-        parts = filename.split('_')
+        # Expected format: YYYYMMDD_HHMMSS_DSME_xxxx[_class1_class2].mp4
+        parts = os.path.splitext(filename)[0].split('_')
         
         # Check if the file matches our renamed format
-        if len(parts) >= 3 and len(parts[0]) == 8 and len(parts[1]) == 6:
+        if len(parts) >= 4 and len(parts[0]) == 8 and len(parts[1]) == 6:
             date_str = parts[0]
             time_str = parts[1]
             
+            # Extract classes if present (everything after DSME_xxxx)
+            # parts[0]=YYYYMMDD, parts[1]=HHMMSS, parts[2]=DSME, parts[3]=xxxx, parts[4:]=classes
+            classes = parts[4:]
+            classes_text = f" [{', '.join(classes)}]" if classes else ""
+            
             # Format to YYYY-MM-DD HH\:MM\:SS (FFmpeg drawtext requires escaping colons)
-            formatted_text = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]} {time_str[:2]}\\:{time_str[2:4]}\\:{time_str[4:]}"
+            formatted_text = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]} {time_str[:2]}\\:{time_str[2:4]}\\:{time_str[4:]}{classes_text}"
             
             input_path = os.path.join(directory, filename)
             temp_path = os.path.join(directory, "temp_" + filename)
@@ -56,6 +61,6 @@ if __name__ == "__main__":
         target_dir = sys.argv[1]
     else:
         # Default to the current batch if no argument provided
-        target_dir = "scan_results_front_window_2025_02_16_00_00__2025_02_22_23_59/02_humans_cars"
+        target_dir = "scan_results_front_window_2025_02_16_00_00__2025_02_22_23_59/02_verified_events"
         
     burn_timestamps(target_dir)

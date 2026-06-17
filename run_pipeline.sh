@@ -8,6 +8,7 @@ JOBS=1
 FS_VAL=2
 DF_VAL=2
 CLASSES="0 2"
+CONF=0.4
 
 # Function to show detailed help
 show_help() {
@@ -15,7 +16,7 @@ show_help() {
 ================================================================================
  VIDEO SCANNING PIPELINE - HELP
 ================================================================================
-Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>] [-j <jobs>] [--fs <frame_skip>] [--df <downscale>] [--classes "0 2"]
+Usage: ./run_pipeline.sh -i <input_video.mp4> [-o <output_dir>] [-j <jobs>] [--fs <frame_skip>] [--df <downscale>] [--classes "0 2"] [--conf 0.4]
 
 This script automates a 5-stage funnel to extract, verify, and timestamp 
 motion events from large video files.
@@ -36,6 +37,8 @@ OPTIONAL ARGUMENTS:
   --classes         YOLOv8 class IDs to detect (default: "0 2" for person/car).
                     Use "all" to detect every object type known to YOLO.
                     Example: --classes "all" or --classes "0 2 16"
+  --conf            Confidence threshold for AI filtering (default: 0.4).
+                    Increase (e.g. 0.6) to reduce false positives from shadows.
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
@@ -73,9 +76,10 @@ while [[ "$#" -gt 0 ]]; do
         -i|--input) INPUT_VIDEO="$2"; shift ;;
         -o|--output) WORKSPACE="$2"; shift ;;
         -j|--jobs) JOBS="$2"; shift ;;
-        -fs|--fs) FS_VAL="$2"; shift ;;
-        -df|--df) DF_VAL="$2"; shift ;;
+        --fs) FS_VAL="$2"; shift ;;
+        --df) DF_VAL="$2"; shift ;;
         --classes) CLASSES="$2"; shift ;;
+        --conf) CONF="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
@@ -102,7 +106,7 @@ fi
 
 # Define internal paths
 DIR_MOTION="$WORKSPACE/01_motion_only"
-DIR_FINAL="$WORKSPACE/02_humans_cars"
+DIR_FINAL="$WORKSPACE/02_verified_events"
 PIPE_LOG="$WORKSPACE/offsets.log"
 STATUS_LOG="$WORKSPACE/status.log"
 
@@ -263,7 +267,7 @@ echo ""
 echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
 echo "========================================================"
-python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES
+python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf $CONF --metadata "$WORKSPACE/classes.json"
 
 echo ""
 echo "========================================================"
@@ -273,15 +277,21 @@ cat << 'EOF' > temp_renamer.py
 import os
 import re
 import sys
+import json
 from datetime import datetime, timedelta
 
-def do_rename(log_file, base_dir, video_filename):
+def do_rename(log_file, base_dir, video_filename, metadata_file):
     match = re.search(r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', video_filename)
     if not match: return
         
     y, m, d, H, M = map(int, match.groups())
     base_start_time = datetime(y, m, d, H, M, 0)
     
+    metadata = {}
+    if os.path.exists(metadata_file):
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+
     if not os.path.exists(log_file): return
     with open(log_file, 'r') as f:
         content = f.read()
@@ -295,7 +305,12 @@ def do_rename(log_file, base_dir, video_filename):
         h, mn, s = offset_str.split(':')
         offset = timedelta(hours=int(h), minutes=int(mn), seconds=float(s))
         actual_time = base_start_time + offset
-        new_name = actual_time.strftime("%Y%m%d_%H%M%S") + "_DSME_" + dsme_num + ".mp4"
+        
+        classes_suffix = ""
+        if full_name in metadata:
+            classes_suffix = "_" + "_".join(metadata[full_name])
+            
+        new_name = actual_time.strftime("%Y%m%d_%H%M%S") + "_DSME_" + dsme_num + classes_suffix + ".mp4"
         rename_map[full_name] = new_name
         
     if not os.path.exists(base_dir): return
@@ -307,10 +322,10 @@ def do_rename(log_file, base_dir, video_filename):
     print(f"Renamed {success} files using offsets.")
 
 if __name__ == "__main__":
-    do_rename(sys.argv[1], sys.argv[2], sys.argv[3])
+    do_rename(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
 EOF
 
-python temp_renamer.py "$PIPE_LOG" "$DIR_FINAL" "$(basename "$INPUT_VIDEO")"
+python temp_renamer.py "$PIPE_LOG" "$DIR_FINAL" "$(basename "$INPUT_VIDEO")" "$WORKSPACE/classes.json"
 rm temp_renamer.py
 
 echo ""
