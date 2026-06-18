@@ -37,10 +37,10 @@ def burn_timestamps(directory, mask_file=None):
             
             if mask_file and os.path.exists(mask_file):
                 # Apply mask outline (red) and text
-                # We use edgedetect to find the outline of the mask, colorkey to make black transparent,
+                # We use a laplacian convolution to find the outline of the mask, colorkey to make black transparent,
                 # colorchannelmixer to turn white edges to red, and overlay it over the video.
                 filter_complex = (
-                    f"[1:v][0:v]scale2ref[mask][vid];[mask]edgedetect=mode=wires,colorkey=black:0.1:0.1,"
+                    f"[1:v][0:v]scale2ref[mask][vid];[mask]convolution='0 -1 0 -1 4 -1 0 -1 0',colorkey=black:0.1:0.1,"
                     f"colorchannelmixer=rr=1:gr=0:br=0:ar=1:rg=0:gg=0:bg=0:ag=0:rb=0:gb=0:bb=0:ab=0[edge];"
                     f"[vid][edge]overlay=shortest=1,drawtext=fontfile={FONT}:text='{formatted_text}':"
                     f"fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:boxborderw=10:x=10:y=10[outv]"
