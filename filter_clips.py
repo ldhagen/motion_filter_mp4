@@ -25,6 +25,7 @@ def main():
     parser.add_argument('--frame-step', type=int, default=30, help="Check every Nth frame for motion")
     parser.add_argument('--classes', nargs='+', default=['0', '2'], help="YOLOv8 class IDs to detect, or 'all' to detect everything")
     parser.add_argument('--conf', type=float, default=0.4, help="Confidence threshold for detection")
+    parser.add_argument('--mask', help="Path to a binary image mask (white areas are kept, black ignored)")
     parser.add_argument('--metadata', help="Path to save metadata (mapping filename to classes)")
     args = parser.parse_args()
 
@@ -42,6 +43,16 @@ def main():
     print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
     print(f"Targeting classes: {'all' if DETECT_CLASSES is None else DETECT_CLASSES}")
     print(f"Confidence threshold: {args.conf}")
+    
+    mask = None
+    if args.mask:
+        if os.path.exists(args.mask):
+            print(f"Loading mask from: {args.mask}")
+            mask = cv2.imread(args.mask, cv2.IMREAD_GRAYSCALE)
+            if mask is None:
+                print(f"Warning: Failed to load mask from {args.mask}")
+        else:
+            print(f"Warning: Mask file not found at {args.mask}")
 
     kept_count = 0
     skipped_count = 0
@@ -71,7 +82,20 @@ def main():
             if not ret: break
                 
             if frame_count % FRAME_STEP == 0:
-                results = model.predict(source=frame, classes=DETECT_CLASSES, conf=args.conf, verbose=False)
+                # Apply mask if provided
+                if mask is not None:
+                    # Resize mask to match frame dimensions if necessary
+                    if mask.shape[:2] != frame.shape[:2]:
+                        mask_resized = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+                    else:
+                        mask_resized = mask
+                        
+                    # Apply mask (bitwise AND) to black out ignored areas
+                    frame_for_detection = cv2.bitwise_and(frame, frame, mask=mask_resized)
+                else:
+                    frame_for_detection = frame
+
+                results = model.predict(source=frame_for_detection, classes=DETECT_CLASSES, conf=args.conf, verbose=False)
                 current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
                 
                 if len(current_boxes) > 0:

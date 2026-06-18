@@ -80,6 +80,7 @@ while [[ "$#" -gt 0 ]]; do
         --df) DF_VAL="$2"; shift ;;
         --classes) CLASSES="$2"; shift ;;
         --conf) CONF="$2"; shift ;;
+        --mask) MASK_FILE="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
@@ -114,6 +115,7 @@ mkdir -p "$DIR_MOTION" "$DIR_FINAL"
 
 echo "========================================================"
 echo " STAGE 1: Motion Extraction (DVR-Scan)"
+echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
 
 if [ "$JOBS" -le 1 ]; then
@@ -266,12 +268,18 @@ fi
 echo ""
 echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
+echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf $CONF --metadata "$WORKSPACE/classes.json"
+FILTER_CMD="python filter_clips.py -i \"$DIR_MOTION\" -o \"$DIR_FINAL\" --frame-step 30 --classes $CLASSES --conf $CONF --metadata \"$WORKSPACE/classes.json\""
+if [ -n "$MASK_FILE" ]; then
+    FILTER_CMD="$FILTER_CMD --mask \"$MASK_FILE\""
+fi
+eval $FILTER_CMD
 
 echo ""
 echo "========================================================"
 echo " STAGE 3: Filename Timestamps"
+echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
 cat << 'EOF' > temp_renamer.py
 import os
@@ -331,12 +339,18 @@ rm temp_renamer.py
 echo ""
 echo "========================================================"
 echo " STAGE 4: Burn Timestamp into Video"
+echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-python burn_timestamps.py "$DIR_FINAL"
+BURN_CMD="python burn_timestamps.py \"$DIR_FINAL\""
+if [ -n "$MASK_FILE" ]; then
+    BURN_CMD="$BURN_CMD --mask \"$MASK_FILE\""
+fi
+eval $BURN_CMD
 
 echo ""
 echo "========================================================"
 echo " STAGE 5: Cleanup"
+echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
 if [ -d "$DIR_MOTION" ]; then
     echo "Removing intermediate motion clips in $DIR_MOTION..."
@@ -347,5 +361,9 @@ rm -rf "$WORKSPACE"/part_* 2>/dev/null
 echo ""
 echo "========================================================"
 echo " DONE! Pipeline complete."
+echo " Finished: $(date '+%Y-%m-%d %H:%M:%S')"
+echo " Results available in: $DIR_FINAL"
+echo "========================================================"
+ Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo " Results available in: $DIR_FINAL"
 echo "========================================================"

@@ -4,7 +4,7 @@ import sys
 
 FONT = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
-def burn_timestamps(directory):
+def burn_timestamps(directory, mask_file=None):
     if not os.path.exists(directory):
         print(f"Error: Directory {directory} not found.")
         return
@@ -35,15 +35,36 @@ def burn_timestamps(directory):
             
             print(f"[{idx+1}/{len(files)}] Burning '{formatted_text.replace(r'\\:', ':')}' into {filename}...")
             
-            # FFmpeg command to burn text without altering audio, using hardware acceleration if possible
-            cmd = [
-                "ffmpeg", "-y", "-v", "error",
-                "-i", input_path,
-                "-vf", f"drawtext=fontfile={FONT}:text='{formatted_text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:boxborderw=10:x=10:y=10",
-                "-c:a", "copy",
-                "-preset", "fast", # Speed up the encoding
-                temp_path
-            ]
+            if mask_file and os.path.exists(mask_file):
+                # Apply mask outline (red) and text
+                # We use edgedetect to find the outline of the mask, colorkey to make black transparent,
+                # colorchannelmixer to turn white edges to red, and overlay it over the video.
+                filter_complex = (
+                    f"[1:v][0:v]scale2ref[mask][vid];[mask]edgedetect=mode=wires,colorkey=black:0.1:0.1,"
+                    f"colorchannelmixer=rr=1:gr=0:br=0:ar=1:rg=0:gg=0:bg=0:ag=0:rb=0:gb=0:bb=0:ab=0[edge];"
+                    f"[vid][edge]overlay=shortest=1,drawtext=fontfile={FONT}:text='{formatted_text}':"
+                    f"fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:boxborderw=10:x=10:y=10[outv]"
+                )
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", input_path,
+                    "-loop", "1", "-i", mask_file,
+                    "-filter_complex", filter_complex,
+                    "-map", "[outv]", "-map", "0:a?",
+                    "-c:a", "copy",
+                    "-preset", "fast",
+                    temp_path
+                ]
+            else:
+                # Original text-only command
+                cmd = [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-i", input_path,
+                    "-vf", f"drawtext=fontfile={FONT}:text='{formatted_text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:boxborderw=10:x=10:y=10",
+                    "-c:a", "copy",
+                    "-preset", "fast",
+                    temp_path
+                ]
             
             result = subprocess.run(cmd)
             if result.returncode == 0:
@@ -56,11 +77,15 @@ def burn_timestamps(directory):
 
     print(f"\nSuccessfully burnt timestamps into {success_count} files.")
 
+import argparse
+
+def main():
+    parser = argparse.ArgumentParser(description="Burn timestamps and optionally mask outlines into videos.")
+    parser.add_argument("target_dir", nargs='?', default="scan_results_front_window_2025_02_16_00_00__2025_02_22_23_59/02_verified_events", help="Directory containing mp4 files to process")
+    parser.add_argument("--mask", help="Optional binary mask image to outline on the video")
+    
+    args = parser.parse_args()
+    burn_timestamps(args.target_dir, args.mask)
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        target_dir = sys.argv[1]
-    else:
-        # Default to the current batch if no argument provided
-        target_dir = "scan_results_front_window_2025_02_16_00_00__2025_02_22_23_59/02_verified_events"
-        
-    burn_timestamps(target_dir)
+    main()
