@@ -289,11 +289,19 @@ import json
 from datetime import datetime, timedelta
 
 def do_rename(log_file, base_dir, video_filename, metadata_file):
-    match = re.search(r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', video_filename)
-    if not match: return
-        
-    y, m, d, H, M = map(int, match.groups())
-    base_start_time = datetime(y, m, d, H, M, 0)
+    # Try YYYYMMDD_HHMMSS first (standard for many cams)
+    match = re.search(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})', video_filename)
+    if match:
+        y, m, d, H, M, S = map(int, match.groups())
+        base_start_time = datetime(y, m, d, H, M, S)
+    else:
+        # Fallback to YYYY_MM_DD_HH_MM
+        match = re.search(r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', video_filename)
+        if not match: 
+            print(f"Warning: Could not parse start time from {video_filename}")
+            return
+        y, m, d, H, M = map(int, match.groups())
+        base_start_time = datetime(y, m, d, H, M, 0)
     
     metadata = {}
     if os.path.exists(metadata_file):
@@ -362,8 +370,5 @@ echo ""
 echo "========================================================"
 echo " DONE! Pipeline complete."
 echo " Finished: $(date '+%Y-%m-%d %H:%M:%S')"
-echo " Results available in: $DIR_FINAL"
-echo "========================================================"
- Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo " Results available in: $DIR_FINAL"
 echo "========================================================"
