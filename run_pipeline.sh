@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Save original command line arguments before they are shifted
+INVOCATION="$0 $@"
+
 # Default values
 INPUT_VIDEO=""
 WORKSPACE=""
@@ -112,6 +115,24 @@ PIPE_LOG="$WORKSPACE/offsets.log"
 STATUS_LOG="$WORKSPACE/status.log"
 
 mkdir -p "$DIR_MOTION" "$DIR_FINAL"
+
+# Log the calling command line details
+echo "Command Line: $INVOCATION"
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] $INVOCATION" >> "$WORKSPACE/run_command.log"
+
+# Log the parsed arguments explicitly
+{
+    echo "Parsed Parameters:"
+    echo "  Input Video: $INPUT_VIDEO"
+    echo "  Workspace:   $WORKSPACE"
+    echo "  Jobs:        $JOBS"
+    echo "  Frame Skip:  $FS_VAL"
+    echo "  Downscale:   $DF_VAL"
+    echo "  Classes:     $CLASSES"
+    echo "  Confidence:  $CONF"
+    echo "  Mask File:   ${MASK_FILE:-None}"
+    echo "--------------------------------------------------------"
+} | tee -a "$WORKSPACE/run_command.log"
 
 echo "========================================================"
 echo " STAGE 1: Motion Extraction (DVR-Scan)"
@@ -274,6 +295,7 @@ FILTER_CMD="python filter_clips.py -i \"$DIR_MOTION\" -o \"$DIR_FINAL\" --frame-
 if [ -n "$MASK_FILE" ]; then
     FILTER_CMD="$FILTER_CMD --mask \"$MASK_FILE\""
 fi
+echo "Executing: $FILTER_CMD"
 eval $FILTER_CMD
 
 echo ""
@@ -353,6 +375,7 @@ BURN_CMD="python burn_timestamps.py \"$DIR_FINAL\""
 if [ -n "$MASK_FILE" ]; then
     BURN_CMD="$BURN_CMD --mask \"$MASK_FILE\""
 fi
+echo "Executing: $BURN_CMD"
 eval $BURN_CMD
 
 echo ""
