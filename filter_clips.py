@@ -116,14 +116,6 @@ def main():
                             frame_has_motion = True
                             break
                     
-                    # Check if any REFERENCE box disappeared (which implies it moved away)
-                    if not frame_has_motion:
-                        for rb in reference_boxes:
-                            max_iou = max([iou(rb, cb) for cb in current_boxes]) if len(current_boxes) > 0 else 0
-                            if max_iou < args.iou_threshold:
-                                frame_has_motion = True
-                                break
-                    
                     if frame_has_motion:
                         motion_frames_count += 1
                                 

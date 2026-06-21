@@ -113,8 +113,27 @@ DIR_MOTION="$WORKSPACE/01_motion_only"
 DIR_FINAL="$WORKSPACE/02_verified_events"
 PIPE_LOG="$WORKSPACE/offsets.log"
 STATUS_LOG="$WORKSPACE/status.log"
+REGION_FILE="$WORKSPACE/mask_regions.txt"
 
 mkdir -p "$DIR_MOTION" "$DIR_FINAL"
+
+if [ -n "$MASK_FILE" ]; then
+    echo "Extracting region polygons from mask file: $MASK_FILE"
+    python3 - <<EOF
+import cv2
+import sys
+mask = cv2.imread("$MASK_FILE", cv2.IMREAD_GRAYSCALE)
+if mask is None:
+    sys.exit(0)
+_, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
+contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+with open("$REGION_FILE", "w") as f:
+    for contour in contours:
+        if len(contour) >= 3:
+            pts = contour.reshape(-1, 2)
+            f.write(" ".join([f"{x} {y}" for x, y in pts]) + "\n")
+EOF
+fi
 
 # Log the calling command line details
 echo "Command Line: $INVOCATION"
@@ -140,7 +159,11 @@ echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
 
 if [ "$JOBS" -le 1 ]; then
-    dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" 2>&1 | tee "$PIPE_LOG"
+    if [ -s "$REGION_FILE" ]; then
+        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -R "$REGION_FILE" 2>&1 | tee "$PIPE_LOG"
+    else
+        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" 2>&1 | tee "$PIPE_LOG"
+    fi
 else
     echo "Parallel Mode: $JOBS jobs"
     echo "Tracking progress in: $STATUS_LOG"
@@ -161,6 +184,7 @@ df = "$DF_VAL"
 dir_motion = "$DIR_MOTION"
 pipe_log = "$PIPE_LOG"
 status_log = "$STATUS_LOG"
+region_file = "$REGION_FILE"
 orig_base = os.path.splitext(os.path.basename(input_video))[0]
 
 def get_duration(video):
@@ -201,6 +225,9 @@ def run_job(i):
     # So we calculate the 'drift' relative to the original.
     
     scan_cmd = ["dvr-scan", "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir]
+    if os.path.exists(region_file) and os.path.getsize(region_file) > 0:
+        scan_cmd.extend(["-R", region_file])
+    
     with open(part_log, "w") as f:
         subprocess.run(scan_cmd, stdout=f, stderr=subprocess.STDOUT)
     
