@@ -13,12 +13,8 @@ echo " Input:  $IN_DIR"
 echo " Output: $OUT_DIR"
 echo "========================================================"
 
-for clip in "$IN_DIR"/*.mp4; do
-    if [ ! -f "$clip" ]; then continue; fi
-    filename=$(basename "$clip")
-    echo "--- Processing: $filename ---"
-    python draw_outlines.py -i "$clip" -o "$OUT_DIR"
-done
+python draw_outlines.py -d "$IN_DIR" -o "$OUT_DIR"
 
 echo ""
 echo "Finished outlining all clips in $IN_DIR."
+

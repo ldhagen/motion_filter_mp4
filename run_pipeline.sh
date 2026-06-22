@@ -198,7 +198,7 @@ def get_actual_start_offset(video, part_file):
     try:
         output = subprocess.check_output(cmd + ["-read_intervals", "%+1"], stderr=subprocess.STDOUT).decode().split('\n')[0]
         return float(output) if output else 0.0
-    except:
+    except Exception:
         return 0.0
 
 duration = get_duration(input_video)
@@ -286,10 +286,11 @@ with open(pipe_log, "w") as master:
                     # Anchor back to original absolute time
                     new_time = offset + timedelta(seconds=start)
                     
-                    ts = int(new_time.total_seconds())
-                    hrs, remainder = divmod(ts, 3600)
-                    mns, scs = divmod(remainder, 60)
-                    mms = int(new_time.microseconds / 1000)
+                    total = new_time.total_seconds()
+                    hrs = int(total // 3600)
+                    mns = int((total % 3600) // 60)
+                    scs = int(total % 60)
+                    mms = int((total * 1000) % 1000)
                     return f"-ss {hrs:02}:{mns:02}:{scs:02}.{mms:03}"
 
                 content = re.sub(r"-ss (\d{2}:\d{2}:\d{2}\.\d{3})", adjust_offset, content)
@@ -318,12 +319,12 @@ echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-FILTER_CMD="python filter_clips.py -i \"$DIR_MOTION\" -o \"$DIR_FINAL\" --frame-step 30 --classes $CLASSES --conf $CONF --metadata \"$WORKSPACE/classes.json\""
+FILTER_CMD=(python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf "$CONF" --metadata "$WORKSPACE/classes.json")
 if [ -n "$MASK_FILE" ]; then
-    FILTER_CMD="$FILTER_CMD --mask \"$MASK_FILE\""
+    FILTER_CMD+=(--mask "$MASK_FILE")
 fi
-echo "Executing: $FILTER_CMD"
-eval $FILTER_CMD
+echo "Executing: ${FILTER_CMD[*]}"
+"${FILTER_CMD[@]}"
 
 echo ""
 echo "========================================================"
@@ -398,12 +399,12 @@ echo "========================================================"
 echo " STAGE 4: Burn Timestamp into Video"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-BURN_CMD="python burn_timestamps.py \"$DIR_FINAL\""
+BURN_CMD=(python burn_timestamps.py "$DIR_FINAL")
 if [ -n "$MASK_FILE" ]; then
-    BURN_CMD="$BURN_CMD --mask \"$MASK_FILE\""
+    BURN_CMD+=(--mask "$MASK_FILE")
 fi
-echo "Executing: $BURN_CMD"
-eval $BURN_CMD
+echo "Executing: ${BURN_CMD[*]}"
+"${BURN_CMD[@]}"
 
 echo ""
 echo "========================================================"

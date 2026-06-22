@@ -1,3 +1,4 @@
+import argparse
 import os
 import subprocess
 import sys
@@ -51,7 +52,7 @@ def burn_timestamps(directory, mask_file=None):
                     "-loop", "1", "-i", mask_file,
                     "-filter_complex", filter_complex,
                     "-map", "[outv]", "-map", "0:a?",
-                    "-c:a", "copy",
+                    "-c:v", "libx264", "-c:a", "copy",
                     "-preset", "fast",
                     temp_path
                 ]
@@ -61,7 +62,7 @@ def burn_timestamps(directory, mask_file=None):
                     "ffmpeg", "-y", "-v", "error",
                     "-i", input_path,
                     "-vf", f"drawtext=fontfile={FONT}:text='{formatted_text}':fontcolor=white:fontsize=24:box=1:boxcolor=black@0.6:boxborderw=10:x=10:y=10",
-                    "-c:a", "copy",
+                    "-c:v", "libx264", "-c:a", "copy",
                     "-preset", "fast",
                     temp_path
                 ]
@@ -77,11 +78,10 @@ def burn_timestamps(directory, mask_file=None):
 
     print(f"\nSuccessfully burnt timestamps into {success_count} files.")
 
-import argparse
 
 def main():
     parser = argparse.ArgumentParser(description="Burn timestamps and optionally mask outlines into videos.")
-    parser.add_argument("target_dir", nargs='?', default="scan_results_front_window_2025_02_16_00_00__2025_02_22_23_59/02_verified_events", help="Directory containing mp4 files to process")
+    parser.add_argument("target_dir", help="Directory containing mp4 files to process")
     parser.add_argument("--mask", help="Optional binary mask image to outline on the video")
     
     args = parser.parse_args()

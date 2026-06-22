@@ -12,8 +12,9 @@ def iou(boxA, boxB):
     interArea = max(0, xB - xA) * max(0, yB - yA)
     boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
     boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-    if boxAArea + boxBArea - interArea == 0: return 0
-    return interArea / float(boxAArea + boxBArea - interArea)
+    denom = boxAArea + boxBArea - interArea
+    if denom == 0: return 0
+    return interArea / float(denom)
 
 def main():
     parser = argparse.ArgumentParser(description="Find static cars in a video and output exclusion regions.")
