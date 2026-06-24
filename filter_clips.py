@@ -4,7 +4,14 @@ import os
 import shutil
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
+
+# Global variables in worker processes
+_model = None
+_mask_resized = None
 
 def iou(boxA, boxB):
     xA = max(boxA[0], boxB[0])
@@ -19,6 +26,87 @@ def iou(boxA, boxB):
     if denom == 0: return 0
     return interArea / float(denom)
 
+def init_worker(mask_path):
+    global _model, _mask_resized
+    # Set PyTorch threads to 1 to avoid thread contention on CPU
+    torch.set_num_threads(1)
+    _model = YOLO('yolov8n.pt')
+    if mask_path and os.path.exists(mask_path):
+        _mask_resized = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
+def process_clip(args_tuple):
+    filename, input_dir, output_dir, iou_threshold, min_motion_frames, frame_step, classes, conf = args_tuple
+    global _model, _mask_resized
+    
+    filepath = os.path.join(input_dir, filename)
+    output_path = os.path.join(output_dir, filename)
+    
+    cap = cv2.VideoCapture(filepath)
+    reference_boxes = None
+    motion_frames_count = 0
+    frame_count = 0
+    detected_classes = set()
+    local_mask_resized = None
+    
+    while cap.isOpened():
+        if frame_count % frame_step != 0:
+            ret = cap.grab()  # skip costly decode for non-sampled frames
+            if not ret: break
+            frame_count += 1
+            continue
+        ret, frame = cap.read()
+        if not ret: break
+
+        # Apply mask if provided
+        if _mask_resized is not None:
+            # Resize mask to match frame dimensions (cached after first use)
+            if local_mask_resized is None:
+                if _mask_resized.shape[:2] != frame.shape[:2]:
+                    local_mask_resized = cv2.resize(_mask_resized, (frame.shape[1], frame.shape[0]))
+                else:
+                    local_mask_resized = _mask_resized
+                
+            # Apply mask (bitwise AND) to black out ignored areas
+            frame_for_detection = cv2.bitwise_and(frame, frame, mask=local_mask_resized)
+        else:
+            frame_for_detection = frame
+
+        results = _model.predict(source=frame_for_detection, classes=classes, conf=conf, verbose=False)
+        current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
+        
+        if len(current_boxes) > 0:
+            for c in results[0].boxes.cls:
+                detected_classes.add(_model.names[int(c)])
+
+        if reference_boxes is None:
+            if len(current_boxes) > 0:
+                # Establish background in the first frame we see something
+                reference_boxes = current_boxes
+        else:
+            frame_has_motion = False
+            
+            # Check if any CURRENT box is 'new' or has 'moved' relative to ALL reference boxes
+            for cb in current_boxes:
+                max_iou = max([iou(cb, rb) for rb in reference_boxes]) if len(reference_boxes) > 0 else 0
+                if max_iou < iou_threshold:
+                    frame_has_motion = True
+                    break
+            
+            if frame_has_motion:
+                motion_frames_count += 1
+                        
+        if motion_frames_count >= min_motion_frames: 
+            break
+        frame_count += 1
+        
+    cap.release()
+    
+    if motion_frames_count >= min_motion_frames:
+        shutil.copy(filepath, output_path)
+        return filename, True, sorted(list(detected_classes)), motion_frames_count
+    else:
+        return filename, False, None, motion_frames_count
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--input', required=True, help="Input directory of clips")
@@ -30,12 +118,10 @@ def main():
     parser.add_argument('--conf', type=float, default=0.4, help="Confidence threshold for detection")
     parser.add_argument('--mask', help="Path to a binary image mask (white areas are kept, black ignored)")
     parser.add_argument('--metadata', help="Path to save metadata (mapping filename to classes)")
+    parser.add_argument('--jobs', type=int, default=multiprocessing.cpu_count(), help="Number of parallel processes for verification")
     args = parser.parse_args()
 
-    model = YOLO('yolov8n.pt') 
     os.makedirs(args.output, exist_ok=True)
-    
-    FRAME_STEP = args.frame_step   
     
     # Handle 'all' keyword
     if 'all' in [c.lower() for c in args.classes]:
@@ -43,25 +129,24 @@ def main():
     else:
         DETECT_CLASSES = [int(c) for c in args.classes]
     
-    print(f"Filtering clips in {args.input} (Persistence-aware, checking every {FRAME_STEP}th frame)...")
+    print(f"Filtering clips in {args.input} (Persistence-aware, checking every {args.frame-step}th frame)...")
     print(f"Targeting classes: {'all' if DETECT_CLASSES is None else DETECT_CLASSES}")
     print(f"Confidence threshold: {args.conf}")
+    print(f"Using {args.jobs} parallel jobs for AI verification")
     
-    mask = None
     if args.mask:
         if os.path.exists(args.mask):
             print(f"Loading mask from: {args.mask}")
-            mask = cv2.imread(args.mask, cv2.IMREAD_GRAYSCALE)
-            if mask is None:
-                print(f"Warning: Failed to load mask from {args.mask}")
         else:
             print(f"Warning: Mask file not found at {args.mask}")
 
+    metadata_map = {}
     kept_count = 0
     skipped_count = 0
-    metadata_map = {}
-    mask_resized = None
+    skipped_existing = 0
 
+    # Build tasks list
+    tasks = []
     for filename in sorted(os.listdir(args.input)):
         if not filename.endswith('.mp4'):
             continue
@@ -72,90 +157,79 @@ def main():
         # Resume support: skip if the file already exists in output
         if os.path.exists(output_path):
             print(f"  [SKIP] {filename} already exists in output directory.")
+            skipped_existing += 1
+            # We also try to populate the metadata_map for existing file
+            # By parsing its filename if it contains class suffix
+            # E.g. 20250914_123456_DSME_0001_person_car.mp4
+            base, ext = os.path.splitext(filename)
+            parts = base.split('_')
+            try:
+                dsme_idx = next(i for i, part in enumerate(parts) if part == "DSME")
+                if dsme_idx + 2 < len(parts):
+                    classes = parts[dsme_idx+2:]
+                    metadata_map[filename] = classes
+            except StopIteration:
+                pass
             continue
             
-        cap = cv2.VideoCapture(filepath)
-        
-        reference_boxes = None
-        motion_frames_count = 0
-        frame_count = 0
-        detected_classes = set()
-        
-        while cap.isOpened():
-            if frame_count % FRAME_STEP != 0:
-                ret = cap.grab()  # skip costly decode for non-sampled frames
-                if not ret: break
-                frame_count += 1
-                continue
-            ret, frame = cap.read()
-            if not ret: break
+        tasks.append((filename, args.input, args.output, args.iou_threshold, args.min_motion_frames, args.frame_step, DETECT_CLASSES, args.conf))
 
-            # Apply mask if provided
-            if mask is not None:
-                # Resize mask to match frame dimensions (cached after first use)
-                if mask_resized is None:
-                    if mask.shape[:2] != frame.shape[:2]:
-                        mask_resized = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                    else:
-                        mask_resized = mask
-                    
-                # Apply mask (bitwise AND) to black out ignored areas
-                frame_for_detection = cv2.bitwise_and(frame, frame, mask=mask_resized)
-            else:
-                frame_for_detection = frame
-
-            results = model.predict(source=frame_for_detection, classes=DETECT_CLASSES, conf=args.conf, verbose=False)
-            current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
-            
-            if len(current_boxes) > 0:
-                for c in results[0].boxes.cls:
-                    detected_classes.add(model.names[int(c)])
-
-            if reference_boxes is None:
-                if len(current_boxes) > 0:
-                    # Establish background in the first frame we see something
-                    reference_boxes = current_boxes
-            else:
-                frame_has_motion = False
-                
-                # Check if any CURRENT box is 'new' or has 'moved' relative to ALL reference boxes
-                for cb in current_boxes:
-                    max_iou = max([iou(cb, rb) for rb in reference_boxes]) if len(reference_boxes) > 0 else 0
-                    if max_iou < args.iou_threshold:
-                        frame_has_motion = True
-                        break
-                
-                if frame_has_motion:
-                    motion_frames_count += 1
-                            
-            if motion_frames_count >= args.min_motion_frames: 
-                break
-            frame_count += 1
-            
-        cap.release()
-        
-        if motion_frames_count >= args.min_motion_frames:
-            classes_str = ",".join(sorted(list(detected_classes)))
-            print(f"  [KEEP] Motion detected in {motion_frames_count} frames: {filename} (Classes: {classes_str})")
-            shutil.copy(filepath, os.path.join(args.output, filename))
-            metadata_map[filename] = sorted(list(detected_classes))
-            kept_count += 1
+    if tasks:
+        if args.jobs > 1:
+            with ProcessPoolExecutor(max_workers=args.jobs, initializer=init_worker, initargs=(args.mask,)) as executor:
+                futures = {executor.submit(process_clip, t): t[0] for t in tasks}
+                for future in as_completed(futures):
+                    filename = futures[future]
+                    try:
+                        fname, kept, classes, motion_count = future.result()
+                        if kept:
+                            classes_str = ",".join(classes)
+                            print(f"  [KEEP] Motion detected in {motion_count} frames: {filename} (Classes: {classes_str})")
+                            metadata_map[filename] = classes
+                            kept_count += 1
+                        else:
+                            print(f"  [SKIP] {filename} (stationary or no real motion)")
+                            skipped_count += 1
+                    except Exception as e:
+                        print(f"Error processing {filename}: {e}")
         else:
-            print(f"  [SKIP] {filename} (stationary or no real motion)")
-            skipped_count += 1
-            
+            # Sequential execution
+            init_worker(args.mask)
+            for t in tasks:
+                filename = t[0]
+                fname, kept, classes, motion_count = process_clip(t)
+                if kept:
+                    classes_str = ",".join(classes)
+                    print(f"  [KEEP] Motion detected in {motion_count} frames: {filename} (Classes: {classes_str})")
+                    metadata_map[filename] = classes
+                    kept_count += 1
+                else:
+                    print(f"  [SKIP] {filename} (stationary or no real motion)")
+                    skipped_count += 1
+
     if args.metadata:
+        # Load existing metadata if it exists and merge
+        existing_metadata = {}
+        if os.path.exists(args.metadata):
+            try:
+                with open(args.metadata, 'r') as f:
+                    existing_metadata = json.load(f)
+            except Exception:
+                pass
+        existing_metadata.update(metadata_map)
         with open(args.metadata, 'w') as f:
-            json.dump(metadata_map, f)
+            json.dump(existing_metadata, f)
 
+    total_scanned = kept_count + skipped_count
     print("\nAI Verification Results:")
-
     print("------------------------")
-    print(f"Total Clips Scanned: {kept_count + skipped_count}")
+    print(f"Total Clips Scanned: {total_scanned}")
+    if skipped_existing > 0:
+        print(f"Previously Processed: {skipped_existing} (Skipped)")
     print(f"Targets Found:       {kept_count} (Keep)")
     print(f"Stationary/Wind:     {skipped_count} (Discarded)")
-    if (kept_count + skipped_count) > 0:
-        reduction = (skipped_count / (kept_count + skipped_count)) * 100
+    if total_scanned > 0:
+        reduction = (skipped_count / total_scanned) * 100
         print(f"Efficiency:          {reduction:.1f}% reduction in footage.")
 
 if __name__ == "__main__":

@@ -182,6 +182,10 @@ if [ "$JOBS" -le 1 ]; then
 else
     echo "Parallel Mode: $JOBS jobs"
     echo "Tracking progress in: $STATUS_LOG"
+    DVR_SCAN_PATH=$(which dvr-scan 2>/dev/null)
+    if [ -z "$DVR_SCAN_PATH" ]; then
+        DVR_SCAN_PATH="dvr-scan"
+    fi
     python3 - <<EOF
 import subprocess
 import os
@@ -203,6 +207,7 @@ region_file = "$REGION_FILE"
 threshold = "$THRESHOLD_VAL"
 min_len = "$MIN_LEN_VAL"
 bg_sub = "$BG_SUB_VAL"
+dvr_scan_path = "$DVR_SCAN_PATH"
 orig_base = os.path.splitext(os.path.basename(input_video))[0]
 
 def get_duration(video):
@@ -242,7 +247,7 @@ def run_job(i):
     # However, dvr-scan usually resets time to 0. 
     # So we calculate the 'drift' relative to the original.
     
-    scan_cmd = ["dvr-scan", "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir, "-t", threshold, "-l", min_len, "-b", bg_sub]
+    scan_cmd = [dvr_scan_path, "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir, "-t", threshold, "-l", min_len, "-b", bg_sub]
     if os.path.exists(region_file) and os.path.getsize(region_file) > 0:
         scan_cmd.extend(["-R", region_file])
     
