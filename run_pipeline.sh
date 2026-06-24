@@ -12,6 +12,9 @@ FS_VAL=2
 DF_VAL=2
 CLASSES="0 2"
 CONF=0.4
+THRESHOLD_VAL="0.15"
+MIN_LEN_VAL="0.1s"
+BG_SUB_VAL="MOG2"
 
 # Function to show detailed help
 show_help() {
@@ -42,6 +45,12 @@ OPTIONAL ARGUMENTS:
                     Example: --classes "all" or --classes "0 2 16"
   --conf            Confidence threshold for AI filtering (default: 0.4).
                     Increase (e.g. 0.6) to reduce false positives from shadows.
+  --threshold       Threshold representing amount of motion in a frame to trigger (default: 0.15).
+                    Increase (e.g. 0.25) to reduce false positives from wind/shadows.
+  --min-len         Minimum event length of motion to trigger event (default: 0.1s).
+                    Increase (e.g. 1.5s) to filter out transient/false motion.
+  --bg-subtractor   Background subtractor type: MOG2 or CNT (default: MOG2).
+                    CNT is optimized for speed/parallelism.
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
@@ -84,6 +93,9 @@ while [[ "$#" -gt 0 ]]; do
         --classes) CLASSES="$2"; shift ;;
         --conf) CONF="$2"; shift ;;
         --mask) MASK_FILE="$2"; shift ;;
+        --threshold) THRESHOLD_VAL="$2"; shift ;;
+        --min-len) MIN_LEN_VAL="$2"; shift ;;
+        --bg-subtractor) BG_SUB_VAL="$2"; shift ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
@@ -150,6 +162,9 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] $INVOCATION" >> "$WORKSPACE/run_command.log
     echo "  Classes:     $CLASSES"
     echo "  Confidence:  $CONF"
     echo "  Mask File:   ${MASK_FILE:-None}"
+    echo "  Threshold:   $THRESHOLD_VAL"
+    echo "  Min Len:     $MIN_LEN_VAL"
+    echo "  BG Sub:      $BG_SUB_VAL"
     echo "--------------------------------------------------------"
 } | tee -a "$WORKSPACE/run_command.log"
 
@@ -160,9 +175,9 @@ echo "========================================================"
 
 if [ "$JOBS" -le 1 ]; then
     if [ -s "$REGION_FILE" ]; then
-        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -R "$REGION_FILE" 2>&1 | tee "$PIPE_LOG"
+        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -R "$REGION_FILE" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
     else
-        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" 2>&1 | tee "$PIPE_LOG"
+        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
     fi
 else
     echo "Parallel Mode: $JOBS jobs"
@@ -185,6 +200,9 @@ dir_motion = "$DIR_MOTION"
 pipe_log = "$PIPE_LOG"
 status_log = "$STATUS_LOG"
 region_file = "$REGION_FILE"
+threshold = "$THRESHOLD_VAL"
+min_len = "$MIN_LEN_VAL"
+bg_sub = "$BG_SUB_VAL"
 orig_base = os.path.splitext(os.path.basename(input_video))[0]
 
 def get_duration(video):
@@ -224,7 +242,7 @@ def run_job(i):
     # However, dvr-scan usually resets time to 0. 
     # So we calculate the 'drift' relative to the original.
     
-    scan_cmd = ["dvr-scan", "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir]
+    scan_cmd = ["dvr-scan", "-i", part_video, "-m", "ffmpeg", "-fs", fs, "-df", df, "-d", part_dir, "-t", threshold, "-l", min_len, "-b", bg_sub]
     if os.path.exists(region_file) and os.path.getsize(region_file) > 0:
         scan_cmd.extend(["-R", region_file])
     
@@ -319,7 +337,7 @@ echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-FILTER_CMD=(python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf "$CONF" --metadata "$WORKSPACE/classes.json")
+FILTER_CMD=(python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf "$CONF" --metadata "$WORKSPACE/classes.json" --jobs "$JOBS")
 if [ -n "$MASK_FILE" ]; then
     FILTER_CMD+=(--mask "$MASK_FILE")
 fi
