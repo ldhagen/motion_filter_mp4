@@ -45,6 +45,8 @@ This project provides a high-performance, multi-stage pipeline to process large 
 - `--classes`: YOLOv8 class IDs to detect. 
     - Default: `"0 2"` (Person and Car).
     - Detect Everything: `--classes all`.
+    - Detect Known Outdoor/Security Objects: `--classes known` (Person, Bicycle, Car, Motorcycle, Bus, Truck, Cat, Dog, Horse).
+    - Custom: `--classes "0 2 16"`.
 
 ## How to Create a Mask
 

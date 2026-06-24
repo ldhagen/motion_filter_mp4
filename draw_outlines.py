@@ -49,9 +49,11 @@ def main():
     args = parser.parse_args()
     output_dir = args.output
     
-    # Handle 'all' keyword
+    # Handle 'all' and 'known' keywords
     if 'all' in [c.lower() for c in args.classes]:
         detect_classes = None
+    elif 'known' in [c.lower() for c in args.classes]:
+        detect_classes = [0, 1, 2, 3, 5, 7, 15, 16, 17]
     else:
         detect_classes = [int(c) for c in args.classes]
 

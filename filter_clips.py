@@ -123,13 +123,15 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
     
-    # Handle 'all' keyword
+    # Handle 'all' and 'known' keywords
     if 'all' in [c.lower() for c in args.classes]:
         DETECT_CLASSES = None
+    elif 'known' in [c.lower() for c in args.classes]:
+        DETECT_CLASSES = [0, 1, 2, 3, 5, 7, 15, 16, 17]
     else:
         DETECT_CLASSES = [int(c) for c in args.classes]
     
-    print(f"Filtering clips in {args.input} (Persistence-aware, checking every {args.frame-step}th frame)...")
+    print(f"Filtering clips in {args.input} (Persistence-aware, checking every {args.frame_step}th frame)...")
     print(f"Targeting classes: {'all' if DETECT_CLASSES is None else DETECT_CLASSES}")
     print(f"Confidence threshold: {args.conf}")
     print(f"Using {args.jobs} parallel jobs for AI verification")

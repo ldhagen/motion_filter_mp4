@@ -60,8 +60,8 @@ OPTIONAL ARGUMENTS:
   --df              Downscale factor for dvr-scan (default: 2).
                     Use 4 for significantly faster scanning at lower resolution.
   --classes         YOLOv8 class IDs to detect (default: "0 2" for person/car).
-                    Use "all" to detect every object type known to YOLO.
-                    Example: --classes "all" or --classes "0 2 16"
+                    Use "all" for all classes, or "known" for common outdoor classes.
+                    Example: --classes "all" or --classes "known" or --classes "0 2 16"
   --conf            Confidence threshold for AI filtering (default: 0.4).
                     Increase (e.g. 0.6) to reduce false positives from shadows.
   --threshold       Threshold representing amount of motion in a frame to trigger (default: 0.15).
