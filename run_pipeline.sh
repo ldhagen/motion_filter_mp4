@@ -16,6 +16,25 @@ THRESHOLD_VAL="0.15"
 MIN_LEN_VAL="0.1s"
 BG_SUB_VAL="MOG2"
 
+# Detect Python binary to use (prefer the virtualenv at /var/tmp/ldh/virt1)
+PYTHON_BIN="python3"
+if [ -f "/var/tmp/ldh/virt1/bin/python3" ]; then
+    PYTHON_BIN="/var/tmp/ldh/virt1/bin/python3"
+elif [ -f "/var/tmp/ldh/virt1/bin/python" ]; then
+    PYTHON_BIN="/var/tmp/ldh/virt1/bin/python"
+fi
+
+# Detect dvr-scan binary path
+DVR_SCAN_PATH=$(which dvr-scan 2>/dev/null)
+if [ -z "$DVR_SCAN_PATH" ]; then
+    VIRT_BIN=$(dirname "$PYTHON_BIN")
+    if [ -f "$VIRT_BIN/dvr-scan" ]; then
+        DVR_SCAN_PATH="$VIRT_BIN/dvr-scan"
+    else
+        DVR_SCAN_PATH="dvr-scan"
+    fi
+fi
+
 # Function to show detailed help
 show_help() {
     cat << EOF
@@ -131,7 +150,7 @@ mkdir -p "$DIR_MOTION" "$DIR_FINAL"
 
 if [ -n "$MASK_FILE" ]; then
     echo "Extracting region polygons from mask file: $MASK_FILE"
-    python3 - <<EOF
+    "$PYTHON_BIN" - <<EOF
 import cv2
 import sys
 mask = cv2.imread("$MASK_FILE", cv2.IMREAD_GRAYSCALE)
@@ -175,18 +194,14 @@ echo "========================================================"
 
 if [ "$JOBS" -le 1 ]; then
     if [ -s "$REGION_FILE" ]; then
-        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -R "$REGION_FILE" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
+        "$DVR_SCAN_PATH" -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -R "$REGION_FILE" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
     else
-        dvr-scan -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
+        "$DVR_SCAN_PATH" -i "$INPUT_VIDEO" -m ffmpeg -fs "$FS_VAL" -df "$DF_VAL" -d "$DIR_MOTION" -t "$THRESHOLD_VAL" -l "$MIN_LEN_VAL" -b "$BG_SUB_VAL" 2>&1 | tee "$PIPE_LOG"
     fi
 else
     echo "Parallel Mode: $JOBS jobs"
     echo "Tracking progress in: $STATUS_LOG"
-    DVR_SCAN_PATH=$(which dvr-scan 2>/dev/null)
-    if [ -z "$DVR_SCAN_PATH" ]; then
-        DVR_SCAN_PATH="dvr-scan"
-    fi
-    python3 - <<EOF
+    "$PYTHON_BIN" - <<EOF
 import subprocess
 import os
 import shutil
@@ -342,7 +357,7 @@ echo "========================================================"
 echo " STAGE 2: AI Filtering (YOLOv8)"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-FILTER_CMD=(python filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf "$CONF" --metadata "$WORKSPACE/classes.json" --jobs "$JOBS")
+FILTER_CMD=("$PYTHON_BIN" filter_clips.py -i "$DIR_MOTION" -o "$DIR_FINAL" --frame-step 30 --classes $CLASSES --conf "$CONF" --metadata "$WORKSPACE/classes.json" --jobs "$JOBS")
 if [ -n "$MASK_FILE" ]; then
     FILTER_CMD+=(--mask "$MASK_FILE")
 fi
@@ -414,7 +429,7 @@ if __name__ == "__main__":
     do_rename(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
 EOF
 
-python temp_renamer.py "$PIPE_LOG" "$DIR_FINAL" "$(basename "$INPUT_VIDEO")" "$WORKSPACE/classes.json"
+"$PYTHON_BIN" temp_renamer.py "$PIPE_LOG" "$DIR_FINAL" "$(basename "$INPUT_VIDEO")" "$WORKSPACE/classes.json"
 rm temp_renamer.py
 
 echo ""
@@ -422,7 +437,7 @@ echo "========================================================"
 echo " STAGE 4: Burn Timestamp into Video"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S')"
 echo "========================================================"
-BURN_CMD=(python burn_timestamps.py "$DIR_FINAL")
+BURN_CMD=("$PYTHON_BIN" burn_timestamps.py "$DIR_FINAL")
 if [ -n "$MASK_FILE" ]; then
     BURN_CMD+=(--mask "$MASK_FILE")
 fi
