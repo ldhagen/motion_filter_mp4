@@ -15,6 +15,7 @@ CONF=0.4
 THRESHOLD_VAL="0.15"
 MIN_LEN_VAL="0.1s"
 BG_SUB_VAL="MOG2"
+DAILY=false
 
 # Detect Python binary to use (prefer the virtualenv at /var/tmp/ldh/virt1)
 PYTHON_BIN="python3"
@@ -70,6 +71,8 @@ OPTIONAL ARGUMENTS:
                     Increase (e.g. 1.5s) to filter out transient/false motion.
   --bg-subtractor   Background subtractor type: MOG2 or CNT (default: MOG2).
                     CNT is optimized for speed/parallelism.
+  --daily           Split the input video into 24-hour segments and process
+                    them sequentially one day at a time.
   -h, --help        Show this full process explanation.
 
 --------------------------------------------------------------------------------
@@ -115,11 +118,31 @@ while [[ "$#" -gt 0 ]]; do
         --threshold) THRESHOLD_VAL="$2"; shift ;;
         --min-len) MIN_LEN_VAL="$2"; shift ;;
         --bg-subtractor) BG_SUB_VAL="$2"; shift ;;
+        --daily) DAILY=true ;;
         -h|--help) show_help; exit 0 ;;
         *) echo "Unknown parameter: $1"; show_help; exit 1 ;;
     esac
     shift
 done
+
+# Function to parse start time from input video filename
+get_start_time() {
+    "$PYTHON_BIN" -c "
+import re, sys, datetime
+fn = sys.argv[1]
+m1 = re.search(r'(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})', fn)
+if m1:
+    print(datetime.datetime(*map(int, m1.groups())).isoformat())
+    sys.exit(0)
+m2 = re.search(r'(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})', fn)
+if m2:
+    parts = list(map(int, m2.groups())) + [0]
+    print(datetime.datetime(*parts).isoformat())
+    sys.exit(0)
+print('ERROR')
+sys.exit(1)
+" "$1"
+}
 
 # Validation
 if [ -z "$INPUT_VIDEO" ]; then
@@ -137,6 +160,109 @@ fi
 BASENAME=$(basename "$INPUT_VIDEO" .mp4)
 if [ -z "$WORKSPACE" ]; then
     WORKSPACE="scan_results_${BASENAME}"
+fi
+
+# If --daily is set, run the daily segmentation loop
+if [ "$DAILY" = true ]; then
+    echo "========================================================"
+    echo " RUNNING PIPELINE IN DAILY SEGMENT MODE (--daily)"
+    echo " Input Video: $INPUT_VIDEO"
+    echo " Workspace:   $WORKSPACE"
+    echo "========================================================"
+    
+    # Get total duration
+    DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$INPUT_VIDEO")
+    if [ -z "$DURATION" ]; then
+        echo "Error: Could not retrieve video duration."
+        exit 1
+    fi
+    
+    # Get start date/time
+    START_ISO=$(get_start_time "$(basename "$INPUT_VIDEO")")
+    if [ $? -ne 0 ] || [ "$START_ISO" = "ERROR" ]; then
+        echo "Error: Could not parse start date/time from filename."
+        exit 1
+    fi
+    
+    # Generate segment list
+    SEGMENTS_LIST=$("$PYTHON_BIN" -c "
+import re, sys, datetime
+start_iso = sys.argv[1]
+duration = float(sys.argv[2])
+basename = sys.argv[3]
+
+dt = datetime.datetime.fromisoformat(start_iso)
+offset = 0.0
+seg_size = 86400.0
+
+prefix = basename
+for pattern in [r'_\d{4}_\d{2}_\d{2}_\d{2}_\d{2}', r'_\d{8}_\d{6}']:
+    m = re.search(pattern, basename)
+    if m:
+        prefix = basename[:m.start()]
+        break
+
+while offset < duration:
+    seg_dur = min(seg_size, duration - offset)
+    seg_dt = dt + datetime.timedelta(seconds=offset)
+    date_suffix = seg_dt.strftime('%Y%m%d_%H%M%S')
+    seg_filename = f'{prefix}_{date_suffix}.mp4'
+    dir_name = seg_dt.strftime('%Y%m%d')
+    print(f'{offset}|{seg_dur}|{seg_filename}|{dir_name}')
+    offset += seg_size
+" "$START_ISO" "$DURATION" "$BASENAME")
+
+    echo "Segments to process:"
+    echo "$SEGMENTS_LIST" | while IFS='|' read -r seg_offset seg_dur seg_filename seg_dirname; do
+        echo "  - Day: $seg_dirname (Offset: ${seg_offset}s, Duration: ${seg_dur}s, Name: $seg_filename)"
+    done
+    echo "--------------------------------------------------------"
+
+    # Process each segment sequentially
+    echo "$SEGMENTS_LIST" | while IFS='|' read -r seg_offset seg_dur seg_filename seg_dirname; do
+        echo ""
+        echo "========================================================"
+        echo " PROCESSING SEGMENT: $seg_dirname"
+        echo " Start Offset: ${seg_offset}s, Duration: ${seg_dur}s"
+        echo "========================================================"
+        
+        DAILY_WORKSPACE="$WORKSPACE/$seg_dirname"
+        mkdir -p "$DAILY_WORKSPACE"
+        TEMP_SEG_VIDEO="$DAILY_WORKSPACE/$seg_filename"
+        
+        # Slice segment using fast seeking and copy streams
+        echo "Extracting 24-hour segment into $TEMP_SEG_VIDEO..."
+        ffmpeg -y -ss "$seg_offset" -t "$seg_dur" -i "$INPUT_VIDEO" -c copy -map 0 -copyts -start_at_zero "$TEMP_SEG_VIDEO"
+        
+        if [ ! -f "$TEMP_SEG_VIDEO" ]; then
+            echo "Error: Failed to extract segment $seg_filename. Skipping."
+            continue
+        fi
+        
+        # Build recursive command arguments
+        RECURSIVE_ARGS=(-i "$TEMP_SEG_VIDEO" -o "$DAILY_WORKSPACE" -j "$JOBS" --fs "$FS_VAL" --df "$DF_VAL" --conf "$CONF" --classes "$CLASSES" --threshold "$THRESHOLD_VAL" --min-len "$MIN_LEN_VAL" --bg-subtractor "$BG_SUB_VAL")
+        if [ -n "$MASK_FILE" ]; then
+            RECURSIVE_ARGS+=(--mask "$MASK_FILE")
+        fi
+        
+        # Execute pipeline on this segment
+        echo "Executing pipeline on segment..."
+        "$0" "${RECURSIVE_ARGS[@]}"
+        
+        # Cleanup temp segment video
+        echo "Cleaning up daily temporary video..."
+        rm -f "$TEMP_SEG_VIDEO"
+        
+        echo "========================================================"
+        echo " COMPLETED SEGMENT: $seg_dirname"
+        echo "========================================================"
+    done
+    
+    echo ""
+    echo "========================================================"
+    echo " ALL DAILY SEGMENTS COMPLETED SUCCESSFULLY!"
+    echo "========================================================"
+    exit 0
 fi
 
 # Define internal paths
