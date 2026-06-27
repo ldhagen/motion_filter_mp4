@@ -213,13 +213,13 @@ while offset < duration:
 " "$START_ISO" "$DURATION" "$BASENAME")
 
     echo "Segments to process:"
-    echo "$SEGMENTS_LIST" | while IFS='|' read -r seg_offset seg_dur seg_filename seg_dirname; do
+    while IFS='|' read -u 9 -r seg_offset seg_dur seg_filename seg_dirname; do
         echo "  - Day: $seg_dirname (Offset: ${seg_offset}s, Duration: ${seg_dur}s, Name: $seg_filename)"
-    done
+    done 9<<< "$SEGMENTS_LIST"
     echo "--------------------------------------------------------"
 
     # Process each segment sequentially
-    echo "$SEGMENTS_LIST" | while IFS='|' read -r seg_offset seg_dur seg_filename seg_dirname; do
+    while IFS='|' read -u 9 -r seg_offset seg_dur seg_filename seg_dirname; do
         echo ""
         echo "========================================================"
         echo " PROCESSING SEGMENT: $seg_dirname"
@@ -256,7 +256,7 @@ while offset < duration:
         echo "========================================================"
         echo " COMPLETED SEGMENT: $seg_dirname"
         echo "========================================================"
-    done
+    done 9<<< "$SEGMENTS_LIST"
     
     echo ""
     echo "========================================================"
