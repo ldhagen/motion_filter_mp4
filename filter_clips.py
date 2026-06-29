@@ -42,11 +42,15 @@ def process_clip(args_tuple):
     output_path = os.path.join(output_dir, filename)
     
     cap = cv2.VideoCapture(filepath)
-    reference_boxes = None
-    motion_frames_count = 0
-    frame_count = 0
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0: fps = 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    reference_boxes = []
+    moving_frames = []
     detected_classes = set()
     local_mask_resized = None
+    frame_count = 0
     
     while cap.isOpened():
         if frame_count % frame_step != 0:
@@ -75,37 +79,54 @@ def process_clip(args_tuple):
         current_boxes = results[0].boxes.xyxy.cpu().numpy() if results[0].boxes else []
         
         if len(current_boxes) > 0:
-            for c in results[0].boxes.cls:
-                detected_classes.add(_model.names[int(c)])
-
-        if reference_boxes is None:
-            if len(current_boxes) > 0:
-                # Establish background in the first frame we see something
-                reference_boxes = current_boxes
-        else:
+            clses = results[0].boxes.cls.cpu().numpy()
             frame_has_motion = False
-            
-            # Check if any CURRENT box is 'new' or has 'moved' relative to ALL reference boxes
-            for cb in current_boxes:
-                max_iou = max([iou(cb, rb) for rb in reference_boxes]) if len(reference_boxes) > 0 else 0
-                if max_iou < iou_threshold:
+            for box, cls_id in zip(current_boxes, clses):
+                cb = (box[0], box[1], box[2], box[3], int(cls_id))
+                same_class_refs = [rb for rb in reference_boxes if rb[4] == cb[4]]
+                max_iou = max([iou(box, rb[:4]) for rb in same_class_refs]) if len(same_class_refs) > 0 else 0
+                
+                if max_iou >= iou_threshold:
+                    # Update reference box to current box to track slight drift
+                    for idx, rb in enumerate(reference_boxes):
+                        if rb[4] == cb[4] and iou(box, rb[:4]) == max_iou:
+                            reference_boxes[idx] = cb
+                            break
+                else:
+                    # New detection at a new position!
                     frame_has_motion = True
-                    break
+                    reference_boxes.append(cb)
             
             if frame_has_motion:
-                motion_frames_count += 1
-                        
-        if motion_frames_count >= min_motion_frames: 
-            break
+                moving_frames.append(frame_count)
+                for c in clses:
+                    detected_classes.add(_model.names[int(c)])
+            
         frame_count += 1
         
     cap.release()
     
-    if motion_frames_count >= min_motion_frames:
-        shutil.copy(filepath, output_path)
-        return filename, True, sorted(list(detected_classes)), motion_frames_count
+    if len(moving_frames) >= min_motion_frames:
+        t_start = moving_frames[0] / fps
+        t_end = moving_frames[-1] / fps
+        
+        # Add 3 seconds padding before and after
+        pad_start = max(0.0, t_start - 3.0)
+        pad_end = min(total_frames / fps, t_end + 3.0)
+        duration = pad_end - pad_start
+        
+        import subprocess
+        temp_out = output_path + ".tmp.mp4"
+        slice_cmd = ["ffmpeg", "-y", "-ss", f"{pad_start:.3f}", "-t", f"{duration:.3f}", "-i", filepath, "-c", "copy", "-map", "0", temp_out]
+        res = subprocess.run(slice_cmd, capture_output=True)
+        if res.returncode == 0 and os.path.exists(temp_out):
+            shutil.move(temp_out, output_path)
+            return filename, True, sorted(list(detected_classes)), len(moving_frames), pad_start
+        else:
+            shutil.copy(filepath, output_path)
+            return filename, True, sorted(list(detected_classes)), len(moving_frames), 0.0
     else:
-        return filename, False, None, motion_frames_count
+        return filename, False, None, len(moving_frames), 0.0
 
 def main():
     parser = argparse.ArgumentParser()
@@ -169,7 +190,10 @@ def main():
                 dsme_idx = next(i for i, part in enumerate(parts) if part == "DSME")
                 if dsme_idx + 2 < len(parts):
                     classes = parts[dsme_idx+2:]
-                    metadata_map[filename] = classes
+                    metadata_map[filename] = {
+                        "classes": classes,
+                        "trim_offset": 0.0
+                    }
             except StopIteration:
                 pass
             continue
@@ -183,11 +207,14 @@ def main():
                 for future in as_completed(futures):
                     filename = futures[future]
                     try:
-                        fname, kept, classes, motion_count = future.result()
+                        fname, kept, classes, motion_count, trim_offset = future.result()
                         if kept:
                             classes_str = ",".join(classes)
                             print(f"  [KEEP] Motion detected in {motion_count} frames: {filename} (Classes: {classes_str})")
-                            metadata_map[filename] = classes
+                            metadata_map[filename] = {
+                                "classes": classes,
+                                "trim_offset": trim_offset
+                            }
                             kept_count += 1
                         else:
                             print(f"  [SKIP] {filename} (stationary or no real motion)")
@@ -199,11 +226,14 @@ def main():
             init_worker(args.mask)
             for t in tasks:
                 filename = t[0]
-                fname, kept, classes, motion_count = process_clip(t)
+                fname, kept, classes, motion_count, trim_offset = process_clip(t)
                 if kept:
                     classes_str = ",".join(classes)
                     print(f"  [KEEP] Motion detected in {motion_count} frames: {filename} (Classes: {classes_str})")
-                    metadata_map[filename] = classes
+                    metadata_map[filename] = {
+                        "classes": classes,
+                        "trim_offset": trim_offset
+                    }
                     kept_count += 1
                 else:
                     print(f"  [SKIP] {filename} (stationary or no real motion)")

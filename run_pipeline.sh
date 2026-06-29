@@ -220,13 +220,18 @@ while offset < duration:
 
     # Process each segment sequentially
     while IFS='|' read -u 9 -r seg_offset seg_dur seg_filename seg_dirname; do
+        DAILY_WORKSPACE="$WORKSPACE/$seg_dirname"
+        if [ -f "$DAILY_WORKSPACE/.completed" ]; then
+            echo "Segment $seg_dirname already completed. Skipping."
+            continue
+        fi
+
         echo ""
         echo "========================================================"
         echo " PROCESSING SEGMENT: $seg_dirname"
         echo " Start Offset: ${seg_offset}s, Duration: ${seg_dur}s"
         echo "========================================================"
         
-        DAILY_WORKSPACE="$WORKSPACE/$seg_dirname"
         mkdir -p "$DAILY_WORKSPACE"
         TEMP_SEG_VIDEO="$DAILY_WORKSPACE/$seg_filename"
         
@@ -252,6 +257,8 @@ while offset < duration:
         # Cleanup temp segment video
         echo "Cleaning up daily temporary video..."
         rm -f "$TEMP_SEG_VIDEO"
+        
+        touch "$DAILY_WORKSPACE/.completed"
         
         echo "========================================================"
         echo " COMPLETED SEGMENT: $seg_dirname"
@@ -366,7 +373,9 @@ def get_actual_start_offset(video, part_file):
         return 0.0
 
 duration = get_duration(input_video)
-chunk_size = duration / jobs
+chunk_size = 3600.0  # Limit each chunk to at most 1 hour (3600 seconds)
+import math
+num_chunks = int(math.ceil(duration / chunk_size))
 
 def run_job(i):
     start_req = i * chunk_size
@@ -400,29 +409,31 @@ def run_job(i):
     
     return i, start_req, True
 
-print(f"Dividing {duration:.2f}s into {jobs} chunks...")
+print(f"Dividing {duration:.2f}s into {num_chunks} chunks of 1 hour (processed with {jobs} parallel workers)...")
 with ProcessPoolExecutor(max_workers=jobs) as executor:
     futures = []
-    for i in range(jobs):
+    for i in range(num_chunks):
         futures.append(executor.submit(run_job, i))
         time.sleep(2)  # Staggered start to prevent dvr-scan log contention
     
     while not all(f.done() for f in futures):
-        summary = []
-        for i in range(jobs):
-            p_log = os.path.join(workspace, f"part_{i}", "offsets.log")
-            if os.path.exists(p_log):
-                with open(p_log, "r") as f:
-                    content = f.read()
-                    last_prog = re.findall(r"Progress:.*?(\d+%)", content)
-                    if last_prog:
-                        summary.append(f"Job {i}: {last_prog[-1]}")
-                    else:
-                        summary.append(f"Job {i}: Scanning...")
-            else:
-                summary.append(f"Job {i}: Initializing...")
+        completed = sum(1 for f in futures if f.done())
+        active = []
+        for i in range(num_chunks):
+            if not futures[i].done():
+                p_log = os.path.join(workspace, f"part_{i}", "offsets.log")
+                if os.path.exists(p_log):
+                    with open(p_log, "r") as f:
+                        content = f.read()
+                        last_prog = re.findall(r"Progress:.*?(\d+%)", content)
+                        if last_prog:
+                            active.append(f"Job {i}: {last_prog[-1]}")
+                        else:
+                            active.append(f"Job {i}: Scanning...")
+                else:
+                    active.append(f"Job {i}: Initializing...")
         
-        status_text = " | ".join(summary)
+        status_text = f"Chunks: {completed}/{num_chunks} complete | Active: " + ", ".join(active[:jobs])
         print(f"\r{status_text}", end="", flush=True)
         with open(status_log, "w") as f:
             f.write(status_text + "\n")
@@ -534,12 +545,18 @@ def do_rename(log_file, base_dir, video_filename, metadata_file):
     for offset_str, full_name, dsme_num in matches:
         h, mn, s = offset_str.split(':')
         offset = timedelta(hours=int(h), minutes=int(mn), seconds=float(s))
-        actual_time = base_start_time + offset
         
+        trim_offset = 0.0
         classes_suffix = ""
         if full_name in metadata:
-            classes_suffix = "_" + "_".join(metadata[full_name])
+            if isinstance(metadata[full_name], dict):
+                classes_list = metadata[full_name].get("classes", [])
+                trim_offset = metadata[full_name].get("trim_offset", 0.0)
+            else:
+                classes_list = metadata[full_name]
+            classes_suffix = "_" + "_".join(classes_list)
             
+        actual_time = base_start_time + offset + timedelta(seconds=trim_offset)
         new_name = actual_time.strftime("%Y%m%d_%H%M%S") + "_DSME_" + dsme_num + classes_suffix + ".mp4"
         rename_map[full_name] = new_name
         
