@@ -4,6 +4,8 @@ This project provides a high-performance, multi-stage pipeline to process large 
 
 ## Refined Features
 
+- **Displacement-Based Motion Detection:** Uses frame-to-frame bounding box center displacement to distinguish real motion from detection jitter, shadows, and lighting changes. Only objects moving >30 pixels between consecutive samples are flagged.
+- **Event Clustering:** Groups nearby motion frames into discrete events separated by configurable time gaps (default 10s). Each event produces a separate short clip instead of one massive file.
 - **Parallel Processing:** Uses multi-threaded chunking in Stage 1 to process 100+ hour videos up to 4x faster. Includes a staggered job start to prevent log file contention and ensure high reliability.
 - **Precision Drift Fix:** Automatically corrects for keyframe alignment errors during chunking, ensuring filenames and burned timestamps are 100% accurate to the original footage.
 - **Object Labeling:** Detected object classes (e.g., person, car) are automatically appended to filenames and visually burned into the video overlay.
@@ -20,13 +22,38 @@ This project provides a high-performance, multi-stage pipeline to process large 
 1.  **Stage 1: Motion Extraction** (`dvr-scan`)
     Slices the large input video into clips. Supports multi-job parallelism (`-j`).
 2.  **Stage 2: AI Filtering** (`filter_clips.py`)
-    Uses YOLOv8 to keep only moving targets. Supports persistence filtering and a **custom mask** to ignore stationary objects and shadows. Includes object class detection and labeling.
+    Uses YOLOv8 with **displacement-based tracking** to keep only actively moving targets. Compares each detection's center position against the previous frame — real motion means significant displacement (>30px), not just a new detection. First appearances of objects are skipped (not flagged as motion). Motion frames are clustered into discrete events, each producing a tightly trimmed output clip.
 3.  **Stage 3: Filename Timestamps & Labeling**
-    Calculates precise calendar dates and appends detected object classes to the filename.
+    Calculates precise calendar dates and appends detected object classes to the filename. Supports event-suffixed filenames from multi-event clips.
 4.  **Stage 4: Visual Timestamp, Label & Mask Burn-In**
     Permanently burns the calculated time, object labels, and a **visual outline of your mask** (if provided) into the top-left corner of the video.
 5.  **Stage 5: Cleanup**
     Deletes massive intermediate files to reclaim disk space.
+
+## Motion Detection Algorithm
+
+The AI filter (`filter_clips.py`) uses a displacement-based approach rather than IOU reference box accumulation:
+
+### How It Works
+1. For each sampled frame (every 30th frame = ~1 sample/second at 30fps):
+   - Run YOLOv8 object detection
+   - For each detected object, compute its bounding box center `(cx, cy)`
+   - Find the nearest same-class detection from the **previous** sampled frame
+   - If center displacement > `--min-displacement` (default 30px) → **real motion**
+   - If no previous detection exists → skip (first appearance, not motion)
+2. Cluster consecutive motion frames into **events** separated by `--event-gap` (default 10s)
+3. Discard events with fewer than `--min-event-frames` (default 2) motion frames
+4. Output each valid event as a separate trimmed clip with 3-second padding
+
+### Why Displacement > IOU
+| Scenario | IOU Approach | Displacement Approach |
+|----------|-------------|----------------------|
+| Parked car, stable | ✅ Correctly ignored | ✅ Correctly ignored |
+| Parked car, shadow shift | ❌ Flagged as motion | ✅ Ignored (< 30px shift) |
+| First detection of any object | ❌ Always flagged as motion | ✅ Skipped |
+| Car driving through scene | ✅ Detected | ✅ Detected (100-500px/sec) |
+| Person walking | ✅ Detected | ✅ Detected (30-100px/sec) |
+| Long clip trim accuracy | ❌ First→last = hours | ✅ Per-event = seconds |
 
 ## Usage
 
@@ -47,6 +74,12 @@ This project provides a high-performance, multi-stage pipeline to process large 
     - Detect Everything: `--classes all`.
     - Detect Known Outdoor/Security Objects: `--classes known` (Person, Bicycle, Car, Motorcycle, Bus, Truck, Cat, Dog, Horse).
     - Custom: `--classes "0 2 16"`.
+
+### Filter-Specific Parameters (Stage 2)
+These can be passed to `filter_clips.py` directly for standalone use:
+- `--min-displacement <px>`: Minimum pixel displacement between frames to count as motion (default: 30).
+- `--min-event-frames <N>`: Minimum motion frames per event to keep it (default: 2).
+- `--event-gap <seconds>`: Seconds of no motion before starting a new event (default: 10).
 
 ## How to Create a Mask
 
@@ -75,7 +108,7 @@ nohup ./run_pipeline.sh -i "path/to/video_2025_11_09_00_00.mp4" -j 4 --conf 0.5 
 You can then monitor progress by checking `run.log` or the `status.log` inside the workspace directory.
 
 ## Individual Tools
-- `filter_clips.py`: AI-based verification, masking, and labeling logic.
+- `filter_clips.py`: AI-based verification using displacement-based motion tracking, masking, and event clustering.
 - `burn_timestamps.py`: Batch burn timestamps, object labels, and mask outlines into video files.
 - `draw_outlines.py`: Segmentation tool to draw outlines on targets. Supports `--classes all`.
 - `generate_static_mask.py`: Identify coordinates of parked cars to be ignored during scanning.

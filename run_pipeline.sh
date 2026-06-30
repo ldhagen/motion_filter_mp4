@@ -537,35 +537,58 @@ def do_rename(log_file, base_dir, video_filename, metadata_file):
     with open(log_file, 'r') as f:
         content = f.read()
 
+    # Build offset_map: DSME source filename -> (timedelta offset, dsme_num)
     escaped_base = re.escape(os.path.splitext(video_filename)[0])
     pattern = re.compile(r'-ss (\d{2}:\d{2}:\d{2}\.\d{3}).*?(' + escaped_base + r'\.DSME_(\d+)\.mp4)')
-    matches = pattern.findall(content)
-
-    rename_map = {}
-    for offset_str, full_name, dsme_num in matches:
+    offset_map = {}
+    for offset_str, full_name, dsme_num in pattern.findall(content):
         h, mn, s = offset_str.split(':')
         offset = timedelta(hours=int(h), minutes=int(mn), seconds=float(s))
-        
-        trim_offset = 0.0
-        classes_suffix = ""
-        if full_name in metadata:
-            if isinstance(metadata[full_name], dict):
-                classes_list = metadata[full_name].get("classes", [])
-                trim_offset = metadata[full_name].get("trim_offset", 0.0)
-            else:
-                classes_list = metadata[full_name]
-            classes_suffix = "_" + "_".join(classes_list)
-            
-        actual_time = base_start_time + offset + timedelta(seconds=trim_offset)
-        new_name = actual_time.strftime("%Y%m%d_%H%M%S") + "_DSME_" + dsme_num + classes_suffix + ".mp4"
-        rename_map[full_name] = new_name
-        
+        offset_map[full_name] = (offset, dsme_num)
+
     if not os.path.exists(base_dir): return
     success = 0
-    for old_name in os.listdir(base_dir):
-        if old_name in rename_map:
-            os.rename(os.path.join(base_dir, old_name), os.path.join(base_dir, rename_map[old_name]))
-            success += 1
+    for old_name in sorted(os.listdir(base_dir)):
+        if not old_name.endswith('.mp4'):
+            continue
+
+        # Look up metadata for this file
+        trim_offset = 0.0
+        classes_suffix = ""
+        source_name = old_name  # default: look up self in offset_map
+
+        if old_name in metadata:
+            meta = metadata[old_name]
+            if isinstance(meta, dict):
+                classes_list = meta.get("classes", [])
+                trim_offset = meta.get("trim_offset", 0.0)
+                source_name = meta.get("source", old_name)
+            else:
+                classes_list = meta
+            if classes_list:
+                classes_suffix = "_" + "_".join(classes_list)
+
+        # Find the dvr-scan offset for the source DSME file
+        if source_name not in offset_map:
+            continue
+
+        base_offset, dsme_num = offset_map[source_name]
+
+        # Preserve event suffix if present
+        evt_suffix = ""
+        evt_match = re.search(r'(_evt\d+)', old_name)
+        if evt_match:
+            evt_suffix = evt_match.group(1)
+
+        actual_time = base_start_time + base_offset + timedelta(seconds=trim_offset)
+        new_name = (actual_time.strftime("%Y%m%d_%H%M%S")
+                    + "_DSME_" + dsme_num
+                    + evt_suffix
+                    + classes_suffix + ".mp4")
+
+        os.rename(os.path.join(base_dir, old_name),
+                  os.path.join(base_dir, new_name))
+        success += 1
     print(f"Renamed {success} files using offsets.")
 
 if __name__ == "__main__":
