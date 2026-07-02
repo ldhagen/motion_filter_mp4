@@ -3,6 +3,10 @@
 # Save original command line arguments before they are shifted
 INVOCATION="$0 $@"
 
+# Play nice: automatically lower process priority of this script and all its children to 19
+renice -n 19 -p $$ >/dev/null 2>&1
+
+
 # Default values
 INPUT_VIDEO=""
 WORKSPACE=""
