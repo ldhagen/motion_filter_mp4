@@ -364,14 +364,14 @@ orig_base = os.path.splitext(os.path.basename(input_video))[0]
 
 def get_duration(video):
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video]
-    return float(subprocess.check_output(cmd).decode().strip())
+    return float(subprocess.check_output(cmd).decode(errors='replace').strip())
 
 def get_actual_start_offset(video, part_file):
     # Determine the actual time in the original video where the part_file starts
     # By analyzing the first packet of the chunk
     cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time", "-of", "csv=p=0", part_file]
     try:
-        output = subprocess.check_output(cmd + ["-read_intervals", "%+1"], stderr=subprocess.STDOUT).decode().split('\n')[0]
+        output = subprocess.check_output(cmd + ["-read_intervals", "%+1"], stderr=subprocess.STDOUT).decode(errors='replace').split('\n')[0]
         return float(output) if output else 0.0
     except Exception:
         return 0.0
@@ -427,7 +427,7 @@ with ProcessPoolExecutor(max_workers=jobs) as executor:
             if not futures[i].done():
                 p_log = os.path.join(workspace, f"part_{i}", "offsets.log")
                 if os.path.exists(p_log):
-                    with open(p_log, "r") as f:
+                    with open(p_log, "r", errors="replace") as f:
                         content = f.read()
                         last_prog = re.findall(r"Progress:.*?(\d+%)", content)
                         if last_prog:
@@ -455,7 +455,7 @@ with open(pipe_log, "w") as master:
         part_base = f"part_{i}"
         
         if os.path.exists(part_log):
-            with open(part_log, "r") as f:
+            with open(part_log, "r", errors="replace") as f:
                 content = f.read()
                 
                 def adjust_offset(match):
