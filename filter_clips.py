@@ -2,6 +2,14 @@ import argparse
 import json
 import math
 import os
+
+# Limit CPU threads for scientific computing libraries to prevent spillover
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import shutil
 import subprocess
 import cv2
@@ -19,6 +27,7 @@ _mask_resized = None
 def init_worker(mask_path):
     """Initialize YOLO model and mask in each worker process."""
     global _model, _mask_resized
+    cv2.setNumThreads(1)
     torch.set_num_threads(1)
     _model = YOLO('yolov8n.pt')
     if mask_path and os.path.exists(mask_path):
