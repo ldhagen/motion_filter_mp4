@@ -148,25 +148,38 @@ for day_dir in "$WORKSPACE_DIR"/202*; do
 done
 
 log_msg "--------------------------------------------------------"
-if [ "$VALID_RUN" = true ] && [ "$COPY_COUNT" -gt 0 ]; then
-    log_msg "Success! $COPY_COUNT event clips successfully archived & verified."
+if [ "$VALID_RUN" = true ]; then
+    if [ "$COPY_COUNT" -gt 0 ]; then
+        log_msg "Success! $COPY_COUNT event clips successfully archived & verified."
+    else
+        log_msg "Success! No event clips found to archive."
+    fi
     
     # 4. Safe Delete Raw Source Video
-    log_msg "Deleting original raw source video: $INPUT_VIDEO..."
-    rm "$INPUT_VIDEO"
-    log_msg "Raw source video deleted successfully."
+    if [ -f "$INPUT_VIDEO" ]; then
+        log_msg "Deleting original raw source video: $INPUT_VIDEO..."
+        rm "$INPUT_VIDEO"
+        log_msg "Raw source video deleted successfully."
+    fi
     
     # 5. Clean up temporary daily directories
     log_msg "Cleaning up local workspace results folder..."
     rm -rf "$WORKSPACE_DIR"
     log_msg "Workspace cleaned up."
     
+    # 6. Delete run.log
+    if [ -f "run.log" ]; then
+        log_msg "Deleting run.log..."
+        rm "run.log"
+        log_msg "run.log deleted successfully."
+    fi
+    
     log_msg "========================================================"
     log_msg " ARCHIVE COMPLETE!"
     log_msg "========================================================"
 else
     log_msg "========================================================"
-    log_msg " WARNING: Archival had errors or no clips were processed."
+    log_msg " WARNING: Archival had errors."
     log_msg " No files have been deleted. Please check logs."
     log_msg "========================================================"
     exit 1
