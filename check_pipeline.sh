@@ -7,7 +7,7 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-LOG_FILE="/home/ldhagen/new_scans/motion_filter_mp4/run.log"
+LOG_FILE="run.log"
 
 echo -e "${BLUE}======================================================================${NC}"
 echo -e "${BLUE}                   VIDEO PIPELINE STATUS REPORT                       ${NC}"

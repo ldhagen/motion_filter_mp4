@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # Save original command line arguments before they are shifted
-INVOCATION="$0 $@"
+INVOCATION="$0 $*"
+SCRIPT_START_TIME=$(date +%s)
+SCRIPT_START_DATE=$(date '+%Y-%m-%d %H:%M:%S')
 
 # Play nice: automatically lower process priority of this script and all its children to 19
 renice -n 19 -p $$ >/dev/null 2>&1
@@ -21,12 +23,12 @@ MIN_LEN_VAL="0.1s"
 BG_SUB_VAL="MOG2"
 DAILY=false
 
-# Detect Python binary to use (prefer the virtualenv at /var/tmp/ldh/virt1)
+# Detect Python binary to use (prefer the virtualenv at ~/virt1)
 PYTHON_BIN="python3"
-if [ -f "/var/tmp/ldh/virt1/bin/python3" ]; then
-    PYTHON_BIN="/var/tmp/ldh/virt1/bin/python3"
-elif [ -f "/var/tmp/ldh/virt1/bin/python" ]; then
-    PYTHON_BIN="/var/tmp/ldh/virt1/bin/python"
+if [ -f "$HOME/virt1/bin/python3" ]; then
+    PYTHON_BIN="$HOME/virt1/bin/python3"
+elif [ -f "$HOME/virt1/bin/python" ]; then
+    PYTHON_BIN="$HOME/virt1/bin/python"
 fi
 
 # Detect dvr-scan binary path
@@ -112,6 +114,8 @@ EOF
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         -i|--input) INPUT_VIDEO="$2"; shift ;;
+        -d|--dir) INPUT_DIR="$2"; shift ;;
+        -a|--archive) ARCHIVE_DIR="$2"; shift ;;
         -o|--output) WORKSPACE="$2"; shift ;;
         -j|--jobs) JOBS="$2"; shift ;;
         --fs) FS_VAL="$2"; shift ;;
@@ -128,6 +132,50 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+# ========================================================
+# MASS PROCESSING MODE (Directory Input)
+# ========================================================
+if [ -n "${INPUT_DIR:-}" ]; then
+    echo "========================================================"
+    echo " MASS PROCESSING DIRECTORY: $INPUT_DIR"
+    echo "========================================================"
+    for vid in "$INPUT_DIR"/*.mp4; do
+        [ -f "$vid" ] || continue
+        VID_NAME=$(basename "$vid")
+        
+        # Check if already processed in history log
+        if grep -q "\"$VID_NAME\"" pipeline_history.csv 2>/dev/null; then
+            echo "Skipping $VID_NAME (already marked complete in pipeline_history.csv)"
+            continue
+        fi
+        
+        echo ""
+        echo ">>> STARTING PROCESSING FOR: $VID_NAME <<<"
+        
+        # Reconstruct the command for the single file
+        CMD=("$0" -i "$vid")
+        [ -n "$WORKSPACE" ] && CMD+=("-o" "$WORKSPACE")
+        [ -n "$ARCHIVE_DIR" ] && CMD+=("-a" "$ARCHIVE_DIR")
+        [ -n "$JOBS" ] && CMD+=("-j" "$JOBS")
+        [ -n "$FS_VAL" ] && CMD+=("--fs" "$FS_VAL")
+        [ -n "$DF_VAL" ] && CMD+=("--df" "$DF_VAL")
+        [ -n "$CLASSES" ] && CMD+=("--classes" "$CLASSES")
+        [ -n "$CONF" ] && CMD+=("--conf" "$CONF")
+        [ -n "$MASK_FILE" ] && CMD+=("--mask" "$MASK_FILE")
+        [ -n "$THRESHOLD_VAL" ] && CMD+=("--threshold" "$THRESHOLD_VAL")
+        [ -n "$MIN_LEN_VAL" ] && CMD+=("--min-len" "$MIN_LEN_VAL")
+        [ -n "$BG_SUB_VAL" ] && CMD+=("--bg-subtractor" "$BG_SUB_VAL")
+        [ "$DAILY" = true ] && CMD+=("--daily")
+        
+        "${CMD[@]}"
+    done
+    
+    echo "========================================================"
+    echo " MASS PROCESSING COMPLETE!"
+    echo "========================================================"
+    exit 0
+fi
 
 # Function to parse start time from input video filename
 get_start_time() {
@@ -225,7 +273,9 @@ while offset < duration:
     # Process each segment sequentially
     while IFS='|' read -u 9 -r seg_offset seg_dur seg_filename seg_dirname; do
         DAILY_WORKSPACE="$WORKSPACE/$seg_dirname"
-        if [ -f "$DAILY_WORKSPACE/.completed" ]; then
+        PERSISTENT_DIR="./persistent_$(basename "$WORKSPACE")/$seg_dirname"
+        
+        if [ -f "$DAILY_WORKSPACE/.completed" ] || [ -f "$PERSISTENT_DIR/.completed" ]; then
             echo "Segment $seg_dirname already completed. Skipping."
             continue
         fi
@@ -237,7 +287,10 @@ while offset < duration:
         echo "========================================================"
         
         mkdir -p "$DAILY_WORKSPACE"
-        TEMP_SEG_VIDEO="$DAILY_WORKSPACE/$seg_filename"
+        # Store the 24-hour segment on the physical disk so /dev/shm workspaces don't run out of memory
+        PHYSICAL_TEMP_DIR="./temp_segments/$seg_dirname"
+        mkdir -p "$PHYSICAL_TEMP_DIR"
+        TEMP_SEG_VIDEO="$PHYSICAL_TEMP_DIR/$seg_filename"
         
         # Slice segment using fast seeking and copy streams
         echo "Extracting 24-hour segment into $TEMP_SEG_VIDEO..."
@@ -264,6 +317,13 @@ while offset < duration:
         
         touch "$DAILY_WORKSPACE/.completed"
         
+        if [[ "$WORKSPACE" == /dev/shm/* ]]; then
+            echo "Moving results from RAM disk to persistent storage ($PERSISTENT_DIR)..."
+            mkdir -p "$(dirname "$PERSISTENT_DIR")"
+            cp -a "$DAILY_WORKSPACE" "$PERSISTENT_DIR"
+            rm -rf "$DAILY_WORKSPACE"
+        fi
+        
         echo "========================================================"
         echo " COMPLETED SEGMENT: $seg_dirname"
         echo "========================================================"
@@ -273,6 +333,25 @@ while offset < duration:
     echo "========================================================"
     echo " ALL DAILY SEGMENTS COMPLETED SUCCESSFULLY!"
     echo "========================================================"
+    
+    SCRIPT_END_TIME=$(date +%s)
+    SCRIPT_END_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+    DURATION=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
+    DUR_STR=$(awk "BEGIN {printf \"%.2f\", $DURATION/3600}")
+    
+    HISTORY_LOG="$(pwd)/pipeline_history.csv"
+    if [ ! -f "$HISTORY_LOG" ]; then
+        echo "StartDate,EndDate,DurationHours,OriginalFile,Command" > "$HISTORY_LOG"
+    fi
+    echo "\"$SCRIPT_START_DATE\",\"$SCRIPT_END_DATE\",\"$DUR_STR\",\"$(basename "$INPUT_VIDEO")\",\"$INVOCATION\"" >> "$HISTORY_LOG"
+    
+    if [ -n "${ARCHIVE_DIR:-}" ]; then
+        echo "========================================================"
+        echo " AUTO-ARCHIVING RESULTS TO: $ARCHIVE_DIR"
+        echo "========================================================"
+        ./archive_clips.sh -i "$INPUT_VIDEO" -a "$ARCHIVE_DIR" -w "$WORKSPACE"
+    fi
+    
     exit 0
 fi
 
@@ -631,3 +710,23 @@ echo " DONE! Pipeline complete."
 echo " Finished: $(date '+%Y-%m-%d %H:%M:%S')"
 echo " Results available in: $DIR_FINAL"
 echo "========================================================"
+
+if [[ "$INPUT_VIDEO" != *"temp_segments"* ]]; then
+    SCRIPT_END_TIME=$(date +%s)
+    SCRIPT_END_DATE=$(date '+%Y-%m-%d %H:%M:%S')
+    DURATION=$((SCRIPT_END_TIME - SCRIPT_START_TIME))
+    DUR_STR=$(awk "BEGIN {printf \"%.2f\", $DURATION/3600}")
+    
+    HISTORY_LOG="$(pwd)/pipeline_history.csv"
+    if [ ! -f "$HISTORY_LOG" ]; then
+        echo "StartDate,EndDate,DurationHours,OriginalFile,Command" > "$HISTORY_LOG"
+    fi
+    echo "\"$SCRIPT_START_DATE\",\"$SCRIPT_END_DATE\",\"$DUR_STR\",\"$(basename "$INPUT_VIDEO")\",\"$INVOCATION\"" >> "$HISTORY_LOG"
+    
+    if [ -n "${ARCHIVE_DIR:-}" ]; then
+        echo "========================================================"
+        echo " AUTO-ARCHIVING RESULTS TO: $ARCHIVE_DIR"
+        echo "========================================================"
+        ./archive_clips.sh -i "$INPUT_VIDEO" -a "$ARCHIVE_DIR" -w "$WORKSPACE"
+    fi
+fi

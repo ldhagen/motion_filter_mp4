@@ -19,15 +19,14 @@ show_help() {
     echo "                    (e.g., /media/ldhagen/.../front_window_2025_05_04_00_00...mp4)"
     echo "  -w, --workspace   The folder containing the scan results."
     echo "                    Defaults to: ./scan_results_<video_name_without_ext>"
-    echo "  -a, --archive     The base path for permanent archival."
-    echo "                    Defaults to: /media/ldhagen/TwelveTB/Archive"
+    echo "  -a, --archive     The base path for permanent archival (required)."
     echo "  -h, --help        Show this help message."
     echo "================================================================================"
 }
 
 INPUT_VIDEO=""
 WORKSPACE_DIR=""
-ARCHIVE_BASE="/media/ldhagen/TwelveTB/Archive"
+ARCHIVE_BASE=""
 
 # Parse arguments
 while [[ "$#" -gt 0 ]]; do
@@ -44,6 +43,12 @@ done
 # Validate required inputs
 if [ -z "$INPUT_VIDEO" ]; then
     echo "Error: Missing required input video argument (-i/--input)."
+    show_help
+    exit 1
+fi
+
+if [ -z "$ARCHIVE_BASE" ]; then
+    echo "Error: Missing required archive base argument (-a/--archive)."
     show_help
     exit 1
 fi
@@ -69,6 +74,15 @@ VIDEO_BASENAME=$(basename "$INPUT_VIDEO")
 VIDEO_NAME_NO_EXT="${VIDEO_BASENAME%.*}"
 if [ -z "$WORKSPACE_DIR" ]; then
     WORKSPACE_DIR="./scan_results_${VIDEO_NAME_NO_EXT}"
+fi
+
+# Check if workspace was moved from RAM to persistent storage by the pipeline
+if [[ "$WORKSPACE_DIR" == /dev/shm/* ]]; then
+    PERSISTENT_WORKSPACE="./persistent_$(basename "$WORKSPACE_DIR")"
+    if [ -d "$PERSISTENT_WORKSPACE" ]; then
+        log_msg "RAM workspace was moved to persistent storage. Updating target to: $PERSISTENT_WORKSPACE"
+        WORKSPACE_DIR="$PERSISTENT_WORKSPACE"
+    fi
 fi
 
 # Check workspace directory presence
